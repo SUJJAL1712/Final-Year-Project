@@ -1,0 +1,216 @@
+# ============================================================
+# Geopolitical Event Classification Taxonomy
+# Used by LLM pipeline for structured event extraction
+# ============================================================
+
+event_categories:
+
+  tariff_events:
+    description: "Trade tariff related events"
+    subcategories:
+      tariff_imposition:
+        description: "New tariff announced or imposed"
+        expected_impact: "negative_target"
+        severity_range: [1, 10]
+      tariff_increase:
+        description: "Existing tariff rate increased"
+        expected_impact: "negative_target"
+        severity_range: [1, 8]
+      tariff_reduction:
+        description: "Tariff rate decreased"
+        expected_impact: "positive_target"
+        severity_range: [1, 6]
+      tariff_removal:
+        description: "Tariff completely removed"
+        expected_impact: "positive_target"
+        severity_range: [1, 8]
+      retaliatory_tariff:
+        description: "Counter-tariff imposed in response"
+        expected_impact: "negative_bilateral"
+        severity_range: [3, 10]
+      tariff_threat:
+        description: "Threat to impose tariffs (not yet enacted)"
+        expected_impact: "mild_negative"
+        severity_range: [1, 6]
+      tariff_negotiation:
+        description: "Active tariff negotiations or talks"
+        expected_impact: "uncertain"
+        severity_range: [1, 4]
+
+  trade_war_events:
+    description: "Broader trade conflict events"
+    subcategories:
+      trade_war_escalation:
+        description: "Significant escalation in trade tensions"
+        expected_impact: "strong_negative"
+        severity_range: [5, 10]
+      trade_war_deescalation:
+        description: "Signs of trade conflict easing"
+        expected_impact: "positive"
+        severity_range: [3, 8]
+      trade_deal_signed:
+        description: "Formal trade agreement reached"
+        expected_impact: "strong_positive"
+        severity_range: [5, 10]
+      trade_deal_collapsed:
+        description: "Trade negotiations broke down"
+        expected_impact: "strong_negative"
+        severity_range: [5, 10]
+      export_ban:
+        description: "Export restrictions imposed"
+        expected_impact: "negative_bilateral"
+        severity_range: [4, 9]
+      sanctions_imposed:
+        description: "Economic sanctions enacted"
+        expected_impact: "strong_negative_target"
+        severity_range: [5, 10]
+      sanctions_lifted:
+        description: "Economic sanctions removed"
+        expected_impact: "positive_target"
+        severity_range: [4, 8]
+
+  tech_war_events:
+    description: "Technology-specific trade conflicts"
+    subcategories:
+      chip_export_restriction:
+        description: "Semiconductor export controls"
+        expected_impact: "negative_tech"
+        severity_range: [5, 10]
+      entity_list_addition:
+        description: "Company added to trade restriction list"
+        expected_impact: "negative_company"
+        severity_range: [4, 9]
+      tech_investment_ban:
+        description: "Restrictions on technology investment"
+        expected_impact: "negative_tech"
+        severity_range: [4, 8]
+      data_regulation:
+        description: "Cross-border data flow restrictions"
+        expected_impact: "negative_tech"
+        severity_range: [3, 7]
+
+  military_conflict_events:
+    description: "Armed conflict and military events"
+    subcategories:
+      conflict_outbreak:
+        description: "New armed conflict begins"
+        expected_impact: "strong_negative_global"
+        severity_range: [7, 10]
+      conflict_escalation:
+        description: "Existing conflict intensifies"
+        expected_impact: "negative"
+        severity_range: [4, 9]
+      conflict_deescalation:
+        description: "Conflict showing signs of easing"
+        expected_impact: "positive"
+        severity_range: [3, 7]
+      ceasefire:
+        description: "Ceasefire agreement reached"
+        expected_impact: "positive"
+        severity_range: [4, 8]
+      military_buildup:
+        description: "Military forces mobilized/positioned"
+        expected_impact: "mild_negative"
+        severity_range: [2, 6]
+      border_skirmish:
+        description: "Small-scale border incident"
+        expected_impact: "mild_negative"
+        severity_range: [2, 5]
+
+  geopolitical_tension_events:
+    description: "Diplomatic and political tension events"
+    subcategories:
+      diplomatic_breakdown:
+        description: "Diplomatic relations severed or recalled"
+        expected_impact: "negative"
+        severity_range: [3, 7]
+      diplomatic_breakthrough:
+        description: "Major diplomatic progress"
+        expected_impact: "positive"
+        severity_range: [3, 7]
+      alliance_formation:
+        description: "New strategic alliance or pact"
+        expected_impact: "mixed"
+        severity_range: [2, 6]
+      territorial_dispute:
+        description: "Territorial claim or dispute"
+        expected_impact: "mild_negative"
+        severity_range: [2, 6]
+
+  supply_chain_events:
+    description: "Supply chain disruption events"
+    subcategories:
+      shipping_disruption:
+        description: "Major shipping route disrupted"
+        expected_impact: "negative_global"
+        severity_range: [4, 9]
+      supply_chain_diversification:
+        description: "Companies moving supply chains"
+        expected_impact: "mixed"
+        severity_range: [2, 5]
+      critical_resource_restriction:
+        description: "Rare earth or critical resource supply cut"
+        expected_impact: "negative_dependent"
+        severity_range: [5, 9]
+
+# Affected sectors mapping
+sector_sensitivity:
+  tariff_events: ["steel", "agriculture", "automotive", "consumer_goods"]
+  trade_war_events: ["technology", "industrials", "consumer_discretionary"]
+  tech_war_events: ["semiconductors", "technology", "telecom"]
+  military_conflict_events: ["defense", "energy", "airlines", "insurance"]
+  geopolitical_tension_events: ["financials", "energy", "materials"]
+  supply_chain_events: ["manufacturing", "retail", "automotive", "technology"]
+
+# Historical reference events (for validation)
+reference_events:
+  - date: "2018-03-22"
+    event: "Trump signs tariff memo targeting China ($50B)"
+    category: "tariff_imposition"
+    severity: 8
+    markets_affected: ["US", "China"]
+  - date: "2018-07-06"
+    event: "US-China tariffs take effect ($34B each)"
+    category: "retaliatory_tariff"
+    severity: 9
+    markets_affected: ["US", "China", "India"]
+  - date: "2019-05-10"
+    event: "US raises China tariffs to 25% on $200B goods"
+    category: "tariff_increase"
+    severity: 9
+    markets_affected: ["US", "China"]
+  - date: "2020-01-15"
+    event: "Phase One trade deal signed"
+    category: "trade_deal_signed"
+    severity: 8
+    markets_affected: ["US", "China"]
+  - date: "2020-06-15"
+    event: "India-China Galwan Valley clash"
+    category: "border_skirmish"
+    severity: 7
+    markets_affected: ["India", "China"]
+  - date: "2022-02-24"
+    event: "Russia invades Ukraine"
+    category: "conflict_outbreak"
+    severity: 10
+    markets_affected: ["US", "India", "China"]
+  - date: "2022-10-07"
+    event: "US CHIPS Act export controls on China"
+    category: "chip_export_restriction"
+    severity: 9
+    markets_affected: ["US", "China"]
+  - date: "2023-10-07"
+    event: "Hamas attack on Israel"
+    category: "conflict_outbreak"
+    severity: 9
+    markets_affected: ["US", "India"]
+  - date: "2024-01-11"
+    event: "Houthi Red Sea shipping attacks escalate"
+    category: "shipping_disruption"
+    severity: 7
+    markets_affected: ["US", "India", "China"]
+  - date: "2025-02-01"
+    event: "Trump 2.0 universal tariff proposal"
+    category: "tariff_imposition"
+    severity: 9
+    markets_affected: ["US", "India", "China"]

@@ -1,0 +1,44 @@
+# Environment
+.env
+.venv/
+venv/
+env/
+
+# Data (raw data is large, don't commit)
+data/raw/
+data/cache/
+*.csv
+*.parquet
+!data/events/*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_metadata/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Results (regeneratable)
+results/
+*.pkl
+*.joblib
+
+# Logs
+logs/
+*.log

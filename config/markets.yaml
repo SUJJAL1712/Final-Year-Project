@@ -1,0 +1,165 @@
+# ============================================================
+# Market Configuration: US - India - China Triangle
+# ============================================================
+
+markets:
+  US:
+    name: "United States"
+    role: "primary_actor"  # Tariff initiator
+    currency: "USD"
+    timezone: "America/New_York"
+    indices:
+      - symbol: "^GSPC"
+        name: "S&P 500"
+        type: "broad_market"
+      - symbol: "^IXIC"
+        name: "NASDAQ Composite"
+        type: "tech_heavy"
+      - symbol: "^DJI"
+        name: "Dow Jones Industrial"
+        type: "blue_chip"
+    # Sectors most affected by tariffs and conflicts
+    sector_etfs:
+      technology: "XLK"
+      industrials: "XLI"
+      materials: "XLB"
+      energy: "XLE"
+      defense: "ITA"
+      consumer_staples: "XLP"
+      consumer_discretionary: "XLY"
+      financials: "XLF"
+      healthcare: "XLV"
+      semiconductors: "SOXX"
+      steel: "SLX"
+      agriculture: "MOO"
+    # Key individual stocks sensitive to geopolitics
+    key_stocks:
+      - symbol: "AAPL"
+        name: "Apple"
+        exposure: "china_supply_chain"
+      - symbol: "BA"
+        name: "Boeing"
+        exposure: "defense_trade"
+      - symbol: "CAT"
+        name: "Caterpillar"
+        exposure: "global_trade"
+      - symbol: "NUE"
+        name: "Nucor"
+        exposure: "steel_tariffs"
+      - symbol: "DE"
+        name: "Deere & Co"
+        exposure: "agriculture_tariffs"
+      - symbol: "LMT"
+        name: "Lockheed Martin"
+        exposure: "defense_conflict"
+      - symbol: "RTX"
+        name: "RTX Corp"
+        exposure: "defense_conflict"
+      - symbol: "XOM"
+        name: "ExxonMobil"
+        exposure: "energy_conflict"
+      - symbol: "INTC"
+        name: "Intel"
+        exposure: "chip_war"
+      - symbol: "NVDA"
+        name: "NVIDIA"
+        exposure: "chip_war"
+
+  India:
+    name: "India"
+    role: "us_ally"  # Strategic partner, potential beneficiary
+    currency: "INR"
+    timezone: "Asia/Kolkata"
+    indices:
+      - symbol: "^NSEI"
+        name: "NIFTY 50"
+        type: "broad_market"
+      - symbol: "^BSESN"
+        name: "BSE SENSEX"
+        type: "broad_market"
+    sector_indices:
+      it: "^CNXIT"
+      bank: "^NSEBANK"
+      pharma: "^CNXPHARMA"
+      metal: "^CNXMETAL"
+      auto: "^CNXAUTO"
+      energy: "^CNXENERGY"
+    key_stocks:
+      - symbol: "TCS.NS"
+        name: "TCS"
+        exposure: "it_services_trade"
+      - symbol: "RELIANCE.NS"
+        name: "Reliance Industries"
+        exposure: "energy_trade"
+      - symbol: "INFY.NS"
+        name: "Infosys"
+        exposure: "it_services_trade"
+      - symbol: "TATASTEEL.NS"
+        name: "Tata Steel"
+        exposure: "steel_tariffs"
+      - symbol: "HDFCBANK.NS"
+        name: "HDFC Bank"
+        exposure: "financial_flows"
+      - symbol: "DRREDDY.NS"
+        name: "Dr Reddys"
+        exposure: "pharma_trade"
+      - symbol: "HAL.NS"
+        name: "Hindustan Aero"
+        exposure: "defense_conflict"
+      - symbol: "ADANIENT.NS"
+        name: "Adani Enterprises"
+        exposure: "infrastructure_trade"
+
+  China:
+    name: "China"
+    role: "us_opposition"  # Trade war counterpart
+    currency: "CNY"
+    timezone: "Asia/Shanghai"
+    indices:
+      - symbol: "000001.SS"
+        name: "SSE Composite"
+        type: "broad_market"
+      - symbol: "399001.SZ"
+        name: "SZSE Component"
+        type: "broad_market"
+      - symbol: "^HSI"
+        name: "Hang Seng"
+        type: "hk_proxy"
+    # Hong Kong listed Chinese companies (more accessible data)
+    key_stocks:
+      - symbol: "BABA"
+        name: "Alibaba"
+        exposure: "tech_trade_war"
+      - symbol: "JD"
+        name: "JD.com"
+        exposure: "ecommerce_trade"
+      - symbol: "BIDU"
+        name: "Baidu"
+        exposure: "tech_trade_war"
+      - symbol: "NIO"
+        name: "NIO"
+        exposure: "ev_tariffs"
+      - symbol: "PDD"
+        name: "PDD Holdings"
+        exposure: "ecommerce_trade"
+      - symbol: "TSM"
+        name: "TSMC"
+        exposure: "semiconductor_war"
+      - symbol: "9988.HK"
+        name: "Alibaba HK"
+        exposure: "tech_trade_war"
+      - symbol: "0700.HK"
+        name: "Tencent"
+        exposure: "tech_trade_war"
+
+# Cross-market analysis pairs
+cross_market_pairs:
+  - pair: ["US", "China"]
+    relationship: "adversarial"
+    key_channels: ["tariffs", "tech_sanctions", "trade_war"]
+  - pair: ["US", "India"]
+    relationship: "allied"
+    key_channels: ["trade_diversion", "strategic_partnership", "defense"]
+  - pair: ["China", "India"]
+    relationship: "competitive"
+    key_channels: ["border_conflict", "trade_competition", "supply_chain"]

@@ -1,0 +1,68 @@
+# ============================================================
+# Global Project Settings
+# Tariff & Conflict Impact on Stock Prices via DC + LLMs
+# ============================================================
+
+project:
+  name: "Geopolitical Impact Analyzer"
+  version: "1.0.0"
+  description: >
+    Analyzing the impact of tariffs and regional conflicts on
+    stock prices through Directional Changes and LLMs
+
+# Time range for historical analysis
+time_range:
+  start: "2015-01-01"
+  end: "2025-12-31"
+
+# Directional Changes configuration
+directional_changes:
+  # Multiple thresholds for multi-resolution analysis
+  thresholds: [0.005, 0.01, 0.02, 0.05, 0.10]
+  # Primary threshold for main analysis
+  primary_threshold: 0.02
+  # Minimum overshoot ratio to consider significant
+  min_overshoot_ratio: 0.5
+
+# LLM configuration
+llm:
+  provider: "anthropic"
+  model: "claude-sonnet-4-20250514"
+  max_tokens: 2048
+  temperature: 0.1
+  # Cache LLM responses to save costs
+  cache_enabled: true
+  cache_dir: "data/cache"
+  # Rate limiting
+  requests_per_minute: 40
+  # Batch size for bulk processing
+  batch_size: 20
+
+# Analysis configuration
+analysis:
+  # Event study window (trading days)
+  event_window:
+    pre: 10
+    post: 20
+  # Estimation window for normal returns
+  estimation_window: 120
+  # Significance level for statistical tests
+  significance_level: 0.05
+  # Cross-market lag analysis (max days)
+  max_cross_market_lag: 10
+  # Granger causality max lags
+  granger_max_lags: 15
+
+# Model configuration
+model:
+  test_size: 0.2
+  random_state: 42
+  cv_folds: 5
+  # Feature importance threshold
+  importance_threshold: 0.01
+
+# Logging
+logging:
+  level: "INFO"
+  file: "logs/project.log"
+  rotation: "10 MB"
