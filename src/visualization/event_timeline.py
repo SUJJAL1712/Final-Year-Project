@@ -71,7 +71,7 @@ class EventTimelineVisualizer:
                 fig.add_trace(
                     go.Scatter(
                         x=[event_date],
-                        y=[normalized.asof(event_date)] if event_date in normalized.index or True else [100],
+                        y=[normalized.asof(event_date) if not pd.isna(normalized.asof(event_date)) else 100],
                         mode="markers",
                         marker=dict(color=color, size=size, symbol="diamond",
                                     line=dict(color="white", width=1)),

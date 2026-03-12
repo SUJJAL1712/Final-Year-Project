@@ -1,160 +1,316 @@
 """
-Regional conflict event tracking and database.
+Regional conflict event tracking from real GDELT news data.
 
-Maintains a structured database of major regional conflicts and geopolitical
-events that impact global markets. Focuses on events relevant to the
-US-India-China triangle and broader global market impact.
+Fetches actual historical conflict news from the GDELT Project API (free, no key)
+and classifies them into structured events. When an Anthropic API key is
+available, uses Claude for high-quality LLM classification; otherwise falls
+back to keyword-based classification.
+
+NO hardcoded events — all data sourced from real news articles.
 """
+
+import os
+import re
 
 import pandas as pd
 from loguru import logger
 
 from src.utils.config import DATA_DIR
+from src.data_collection.gdelt_fetcher import GDELTFetcher
 
 
 class ConflictEventTracker:
-    """Tracks and manages conflict-related geopolitical events."""
+    """Tracks conflict events from real GDELT news + optional LLM classification."""
+
+    KEYWORD_CATEGORIES = {
+        "invasion": "conflict_outbreak",
+        "declares war": "conflict_outbreak",
+        "war breaks out": "conflict_outbreak",
+        "new conflict": "conflict_outbreak",
+        "escalat": "conflict_escalation",
+        "intensif": "conflict_escalation",
+        "retaliatory strike": "conflict_escalation",
+        "deescalat": "conflict_deescalation",
+        "de-escalat": "conflict_deescalation",
+        "tension eas": "conflict_deescalation",
+        "ceasefire": "ceasefire",
+        "truce": "ceasefire",
+        "peace deal": "ceasefire",
+        "military buildup": "military_buildup",
+        "troops deploy": "military_buildup",
+        "mobiliz": "military_buildup",
+        "border clash": "border_skirmish",
+        "border skirmish": "border_skirmish",
+        "border incident": "border_skirmish",
+        "galwan": "border_skirmish",
+        "ladakh": "border_skirmish",
+        "air strike": "military_action",
+        "missile strike": "military_action",
+        "bombing": "military_action",
+        "airstrike": "military_action",
+        "surgical strike": "military_action",
+        "military operation": "military_action",
+        "drone strike": "military_action",
+        "shipping disruption": "shipping_disruption",
+        "shipping attack": "shipping_disruption",
+        "ship seize": "shipping_disruption",
+        "shipping reroute": "shipping_disruption",
+        "red sea": "shipping_disruption",
+        "houthi": "shipping_disruption",
+        "sanction": "sanctions_imposed",
+        "diplomatic breakdown": "diplomatic_breakdown",
+        "ambassador recall": "diplomatic_breakdown",
+        "diplomatic progress": "diplomatic_breakthrough",
+        "diplomatic breakthrou": "diplomatic_breakthrough",
+        "territorial dispute": "territorial_dispute",
+        "territorial claim": "territorial_dispute",
+        "south china sea": "territorial_dispute",
+        "conflict": "conflict_escalation",  # default catch-all (keep last)
+    }
+
+    COUNTRY_PATTERNS = {
+        "US": [
+            r"\bUS\b", r"\bU\.S\.", r"United States", r"America", r"Washington",
+        ],
+        "China": [r"\bChina\b", r"Beijing", r"Chinese", r"\bPRC\b"],
+        "India": [r"\bIndia\b", r"New Delhi", r"Indian"],
+        "Russia": [r"\bRussia\b", r"Moscow", r"Russian", r"Kremlin"],
+        "Ukraine": [r"\bUkraine\b", r"Ukrainian", r"Kyiv"],
+        "Israel": [r"\bIsrael\b", r"Israeli"],
+        "Palestine": [r"\bPalestine\b", r"\bGaza\b", r"\bHamas\b"],
+        "Pakistan": [r"\bPakistan\b", r"Islamabad", r"Pakistani"],
+        "Iran": [r"\bIran\b", r"Tehran", r"Iranian"],
+        "Yemen": [r"\bYemen\b", r"\bHouthi\b"],
+        "Taiwan": [r"\bTaiwan\b", r"Taipei"],
+    }
+
+    SEVERITY_MAP = {
+        "conflict_outbreak": 9,
+        "conflict_escalation": 7,
+        "conflict_deescalation": 5,
+        "ceasefire": 6,
+        "military_buildup": 5,
+        "border_skirmish": 6,
+        "military_action": 8,
+        "shipping_disruption": 7,
+        "sanctions_imposed": 7,
+        "sanctions_lifted": 5,
+        "diplomatic_breakdown": 5,
+        "diplomatic_breakthrough": 5,
+        "territorial_dispute": 5,
+        "alliance_formation": 4,
+    }
+
+    # Countries → which stock markets are affected
+    MARKET_IMPACT = {
+        "Russia": ["US", "India", "China"],
+        "Ukraine": ["US", "India", "China"],
+        "Israel": ["US", "India"],
+        "Palestine": ["US", "India"],
+        "Yemen": ["US", "India", "China"],
+        "Taiwan": ["US", "China"],
+        "Pakistan": ["India"],
+        "Iran": ["US", "India", "China"],
+    }
 
     def __init__(self):
         self.events_dir = DATA_DIR / "events"
         self.events_dir.mkdir(parents=True, exist_ok=True)
+        self.cache_path = self.events_dir / "conflict_events.csv"
+        self.gdelt = GDELTFetcher()
+
+    def get_conflict_events(
+        self,
+        start_date: str = "2015-01-01",
+        end_date: str = "2025-12-31",
+        force_refresh: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Get classified conflict events from real GDELT news data.
+
+        Pipeline:
+        1. Fetch conflict news from GDELT API (free, no key required)
+        2. Classify via LLM (if API key available) or keyword matching
+        3. Deduplicate into distinct events (weekly grouping)
+        4. Cache to disk for fast reload
+        """
+        if self.cache_path.exists() and not force_refresh:
+            logger.info(f"Loading cached conflict events from {self.cache_path}")
+            return pd.read_csv(self.cache_path, parse_dates=["date"])
+
+        # Step 1: Fetch from GDELT
+        logger.info("Fetching conflict news from GDELT...")
+        raw_news = self.gdelt.fetch_conflict_news(start_date, end_date)
+
+        if raw_news.empty:
+            logger.warning("No conflict news from GDELT")
+            return pd.DataFrame()
+
+        logger.info(f"GDELT returned {len(raw_news)} conflict articles")
+
+        # Step 2: Classify
+        if os.getenv("ANTHROPIC_API_KEY"):
+            logger.info("Using LLM classification (Claude API)...")
+            events = self._classify_with_llm(raw_news)
+        else:
+            logger.info("No ANTHROPIC_API_KEY — using keyword classification...")
+            events = self._classify_with_keywords(raw_news)
+
+        if events.empty:
+            logger.warning("No events after classification")
+            return pd.DataFrame()
+
+        # Step 3: Deduplicate
+        events = self._deduplicate_events(events)
+        events["event_type"] = "conflict"
+
+        # Step 4: Cache
+        events.to_csv(self.cache_path, index=False)
+        logger.info(f"Saved {len(events)} conflict events to cache")
+
+        return events
+
+    def _classify_with_llm(self, news_df: pd.DataFrame) -> pd.DataFrame:
+        """Classify articles using LLM batch classification."""
+        from src.llm_pipeline.event_classifier import EventClassifier
+
+        classifier = EventClassifier()
+        articles = news_df.copy()
+        if "content" not in articles.columns:
+            articles["content"] = articles["title"]
+
+        classified = classifier.classify_batch(articles)
+        if classified.empty:
+            return pd.DataFrame()
+
+        events = pd.DataFrame()
+        events["date"] = pd.to_datetime(
+            classified.get("date", pd.Series(dtype=str)), errors="coerce"
+        )
+        events["event"] = classified.get("title", "")
+        events["category"] = classified.get(
+            "event_subcategory", "conflict_escalation"
+        )
+        events["severity"] = (
+            pd.to_numeric(classified.get("severity", 5), errors="coerce")
+            .fillna(5)
+            .astype(int)
+        )
+
+        if "countries_involved" in classified.columns:
+            events["primary_countries"] = classified["countries_involved"].apply(
+                lambda x: x if isinstance(x, list) else []
+            )
+        else:
+            events["primary_countries"] = [[] for _ in range(len(events))]
+
+        events["affected_markets"] = events["primary_countries"].apply(
+            self._infer_affected_markets
+        )
+
+        if "affected_sectors" in classified.columns:
+            events["affected_sectors"] = classified["affected_sectors"].apply(
+                lambda x: x if isinstance(x, list) else ["defense", "energy"]
+            )
+        else:
+            events["affected_sectors"] = [
+                ["defense", "energy"] for _ in range(len(events))
+            ]
+
+        events["confidence"] = (
+            pd.to_numeric(classified.get("confidence", 0.5), errors="coerce")
+            .fillna(0.5)
+        )
+
+        events = events[events["category"] != "not_relevant"]
+        return events.dropna(subset=["date"])
+
+    def _classify_with_keywords(self, news_df: pd.DataFrame) -> pd.DataFrame:
+        """Fallback: classify articles using keyword matching."""
+        records = []
+
+        for _, row in news_df.iterrows():
+            title = str(row.get("title", ""))
+            title_lower = title.lower()
+
+            # Determine category (first match wins)
+            category = "conflict_escalation"
+            for keyword, cat in self.KEYWORD_CATEGORIES.items():
+                if keyword.lower() in title_lower:
+                    category = cat
+                    break
+
+            # Extract countries mentioned
+            countries = []
+            for country, patterns in self.COUNTRY_PATTERNS.items():
+                for pattern in patterns:
+                    if re.search(pattern, title, re.IGNORECASE):
+                        countries.append(country)
+                        break
+
+            severity = self.SEVERITY_MAP.get(category, 5)
+
+            # Adjust severity based on GDELT tone
+            tone = row.get("tone", 0)
+            if isinstance(tone, (int, float)) and abs(tone) > 5:
+                severity = min(10, severity + 1)
+
+            affected_markets = self._infer_affected_markets(countries)
+
+            records.append({
+                "date": pd.to_datetime(row.get("published_at"), errors="coerce"),
+                "event": title,
+                "category": category,
+                "severity": severity,
+                "primary_countries": countries,
+                "affected_markets": affected_markets,
+                "affected_sectors": ["defense", "energy"],
+                "confidence": 0.6,
+            })
+
+        return pd.DataFrame(records).dropna(subset=["date"])
+
+    def _infer_affected_markets(self, countries: list) -> list:
+        """Infer which stock markets are affected based on countries involved."""
+        if not isinstance(countries, list):
+            return ["US", "India", "China"]
+
+        markets = set()
+        for c in countries:
+            if c in ("US", "India", "China"):
+                markets.add(c)
+            elif c in self.MARKET_IMPACT:
+                markets.update(self.MARKET_IMPACT[c])
+
+        # Default: if no specific market identified, assume global impact
+        if not markets:
+            markets = {"US", "India", "China"}
+
+        return sorted(markets)
+
+    def _deduplicate_events(self, events: pd.DataFrame) -> pd.DataFrame:
+        """Deduplicate by keeping highest-severity per category per week."""
+        if events.empty:
+            return events
+
+        events = events.sort_values("date")
+        events["_week"] = events["date"].dt.isocalendar().week.astype(int)
+        events["_year"] = events["date"].dt.year
+
+        deduped = (
+            events.sort_values("severity", ascending=False)
+            .drop_duplicates(subset=["_year", "_week", "category"], keep="first")
+            .drop(columns=["_week", "_year"])
+            .sort_values("date")
+            .reset_index(drop=True)
+        )
+        return deduped
+
+    # ---- Backward-compatible aliases ----
 
     def get_curated_conflict_events(self) -> pd.DataFrame:
-        """
-        Return a curated database of major conflict events (2015-2025).
-        """
-        events = [
-            # === South China Sea Tensions ===
-            {"date": "2016-07-12", "event": "International tribunal rules against China on South China Sea",
-             "category": "territorial_dispute", "severity": 6,
-             "primary_countries": ["China", "Philippines"],
-             "affected_markets": ["China", "US"],
-             "affected_sectors": ["shipping", "energy", "defense"]},
-
-            # === India-Pakistan Tensions ===
-            {"date": "2016-09-29", "event": "India surgical strikes across LoC in Pakistan",
-             "category": "military_action", "severity": 7,
-             "primary_countries": ["India", "Pakistan"],
-             "affected_markets": ["India"],
-             "affected_sectors": ["defense", "financials"]},
-            {"date": "2019-02-26", "event": "India Balakot air strikes in Pakistan",
-             "category": "conflict_escalation", "severity": 8,
-             "primary_countries": ["India", "Pakistan"],
-             "affected_markets": ["India"],
-             "affected_sectors": ["defense", "airlines", "financials"]},
-            {"date": "2019-02-27", "event": "Pakistan retaliates, Indian pilot captured",
-             "category": "conflict_escalation", "severity": 8,
-             "primary_countries": ["India", "Pakistan"],
-             "affected_markets": ["India"],
-             "affected_sectors": ["defense", "airlines", "financials"]},
-
-            # === India-China Border Conflict ===
-            {"date": "2020-05-05", "event": "India-China troops clash at Pangong Tso, Ladakh",
-             "category": "border_skirmish", "severity": 5,
-             "primary_countries": ["India", "China"],
-             "affected_markets": ["India", "China"],
-             "affected_sectors": ["defense", "technology"]},
-            {"date": "2020-06-15", "event": "Galwan Valley deadly clash, 20 Indian soldiers killed",
-             "category": "border_skirmish", "severity": 9,
-             "primary_countries": ["India", "China"],
-             "affected_markets": ["India", "China"],
-             "affected_sectors": ["defense", "technology", "consumer_goods"]},
-            {"date": "2020-06-29", "event": "India bans 59 Chinese apps including TikTok",
-             "category": "sanctions_imposed", "severity": 7,
-             "primary_countries": ["India", "China"],
-             "affected_markets": ["India", "China"],
-             "affected_sectors": ["technology", "internet"]},
-            {"date": "2021-02-11", "event": "India-China agree to disengage at Pangong Tso",
-             "category": "conflict_deescalation", "severity": 6,
-             "primary_countries": ["India", "China"],
-             "affected_markets": ["India", "China"],
-             "affected_sectors": ["defense"]},
-
-            # === US-Iran Tensions ===
-            {"date": "2020-01-03", "event": "US kills Iranian General Soleimani",
-             "category": "conflict_escalation", "severity": 9,
-             "primary_countries": ["US", "Iran"],
-             "affected_markets": ["US", "India", "China"],
-             "affected_sectors": ["energy", "defense", "airlines"]},
-            {"date": "2020-01-08", "event": "Iran retaliates with missile strikes on US bases in Iraq",
-             "category": "conflict_escalation", "severity": 8,
-             "primary_countries": ["US", "Iran"],
-             "affected_markets": ["US", "India", "China"],
-             "affected_sectors": ["energy", "defense"]},
-
-            # === Russia-Ukraine War ===
-            {"date": "2022-02-24", "event": "Russia invades Ukraine",
-             "category": "conflict_outbreak", "severity": 10,
-             "primary_countries": ["Russia", "Ukraine"],
-             "affected_markets": ["US", "India", "China"],
-             "affected_sectors": ["energy", "agriculture", "defense", "financials", "shipping"]},
-            {"date": "2022-03-08", "event": "US bans Russian oil imports",
-             "category": "sanctions_imposed", "severity": 8,
-             "primary_countries": ["US", "Russia"],
-             "affected_markets": ["US", "India", "China"],
-             "affected_sectors": ["energy"]},
-            {"date": "2022-06-27", "event": "G7 agrees to Russian oil price cap",
-             "category": "sanctions_imposed", "severity": 7,
-             "primary_countries": ["US", "Russia"],
-             "affected_markets": ["US", "India", "China"],
-             "affected_sectors": ["energy"]},
-            {"date": "2022-09-21", "event": "Russia announces partial mobilization",
-             "category": "conflict_escalation", "severity": 8,
-             "primary_countries": ["Russia", "Ukraine"],
-             "affected_markets": ["US", "India", "China"],
-             "affected_sectors": ["energy", "defense", "agriculture"]},
-
-            # === Taiwan Strait Crisis ===
-            {"date": "2022-08-02", "event": "Pelosi visits Taiwan, China launches military drills",
-             "category": "conflict_escalation", "severity": 9,
-             "primary_countries": ["US", "China"],
-             "affected_markets": ["US", "China", "India"],
-             "affected_sectors": ["semiconductors", "technology", "defense", "shipping"]},
-
-            # === Israel-Hamas War ===
-            {"date": "2023-10-07", "event": "Hamas attacks Israel",
-             "category": "conflict_outbreak", "severity": 9,
-             "primary_countries": ["Israel", "Palestine"],
-             "affected_markets": ["US", "India"],
-             "affected_sectors": ["energy", "defense", "airlines"]},
-            {"date": "2023-10-27", "event": "Israel begins ground offensive in Gaza",
-             "category": "conflict_escalation", "severity": 8,
-             "primary_countries": ["Israel", "Palestine"],
-             "affected_markets": ["US", "India"],
-             "affected_sectors": ["energy", "defense"]},
-
-            # === Red Sea / Houthi Crisis ===
-            {"date": "2023-11-19", "event": "Houthis seize Galaxy Leader cargo ship in Red Sea",
-             "category": "shipping_disruption", "severity": 7,
-             "primary_countries": ["Yemen"],
-             "affected_markets": ["US", "India", "China"],
-             "affected_sectors": ["shipping", "energy", "consumer_goods"]},
-            {"date": "2024-01-11", "event": "US-UK launch strikes against Houthi targets in Yemen",
-             "category": "conflict_escalation", "severity": 8,
-             "primary_countries": ["US", "Yemen"],
-             "affected_markets": ["US", "India", "China"],
-             "affected_sectors": ["shipping", "energy", "defense"]},
-            {"date": "2024-02-19", "event": "Houthi attacks force major shipping reroutes around Africa",
-             "category": "shipping_disruption", "severity": 8,
-             "primary_countries": ["Yemen"],
-             "affected_markets": ["US", "India", "China"],
-             "affected_sectors": ["shipping", "energy", "consumer_goods", "manufacturing"]},
-
-            # === India-Pakistan 2025 ===
-            {"date": "2025-04-22", "event": "Pahalgam terror attack in Indian Kashmir",
-             "category": "conflict_escalation", "severity": 7,
-             "primary_countries": ["India", "Pakistan"],
-             "affected_markets": ["India"],
-             "affected_sectors": ["defense", "financials", "tourism"]},
-        ]
-
-        df = pd.DataFrame(events)
-        df["date"] = pd.to_datetime(df["date"])
-        df = df.sort_values("date").reset_index(drop=True)
-
-        df.to_csv(self.events_dir / "conflict_events.csv", index=False)
-        logger.info(f"Loaded {len(df)} curated conflict events")
-        return df
+        """Backward-compatible alias for get_conflict_events."""
+        return self.get_conflict_events()
 
     def get_combined_geopolitical_events(self) -> pd.DataFrame:
         """
@@ -163,24 +319,40 @@ class ConflictEventTracker:
         """
         from src.data_collection.tariff_tracker import TariffEventTracker
 
-        tariff_events = TariffEventTracker().get_curated_tariff_events()
-        conflict_events = self.get_curated_conflict_events()
+        cache_path = self.events_dir / "all_geopolitical_events.csv"
+        if cache_path.exists():
+            logger.info(f"Loading cached combined events from {cache_path}")
+            return pd.read_csv(cache_path, parse_dates=["date"])
 
-        # Standardize columns
-        tariff_events["event_type"] = "tariff"
-        conflict_events["event_type"] = "conflict"
+        tariff_events = TariffEventTracker().get_tariff_events()
+        conflict_events = self.get_conflict_events()
 
-        # Align columns
-        tariff_std = tariff_events[["date", "event", "category", "severity", "event_type"]].copy()
-        tariff_std["markets_affected"] = tariff_events["markets_affected"]
+        frames = []
 
-        conflict_std = conflict_events[["date", "event", "category", "severity", "event_type"]].copy()
-        conflict_std["markets_affected"] = conflict_events["affected_markets"]
+        if not tariff_events.empty:
+            tariff_std = tariff_events[
+                ["date", "event", "category", "severity"]
+            ].copy()
+            tariff_std["event_type"] = "tariff"
+            tariff_std["markets_affected"] = tariff_events["markets_affected"]
+            frames.append(tariff_std)
 
-        combined = pd.concat([tariff_std, conflict_std], ignore_index=True)
+        if not conflict_events.empty:
+            conflict_std = conflict_events[
+                ["date", "event", "category", "severity"]
+            ].copy()
+            conflict_std["event_type"] = "conflict"
+            conflict_std["markets_affected"] = conflict_events["affected_markets"]
+            frames.append(conflict_std)
+
+        if not frames:
+            logger.warning("No events from either tariff or conflict trackers")
+            return pd.DataFrame()
+
+        combined = pd.concat(frames, ignore_index=True)
         combined = combined.sort_values("date").reset_index(drop=True)
 
-        combined.to_csv(self.events_dir / "all_geopolitical_events.csv", index=False)
+        combined.to_csv(cache_path, index=False)
         logger.info(f"Combined event database: {len(combined)} events")
         return combined
 
@@ -189,6 +361,8 @@ class ConflictEventTracker:
     ) -> pd.DataFrame:
         """Get all events within a window around a specific date."""
         combined = self.get_combined_geopolitical_events()
+        if combined.empty:
+            return combined
         target = pd.Timestamp(target_date)
         start = target - pd.Timedelta(days=window_days)
         end = target + pd.Timedelta(days=window_days)
@@ -198,6 +372,8 @@ class ConflictEventTracker:
     def get_market_specific_timeline(self, market_id: str) -> pd.DataFrame:
         """Get chronological event timeline for a specific market."""
         combined = self.get_combined_geopolitical_events()
+        if combined.empty:
+            return combined
         mask = combined["markets_affected"].apply(
             lambda x: market_id in x if isinstance(x, list) else market_id in str(x)
         )

@@ -154,9 +154,41 @@ class NewsCollector:
     def collect_tariff_news(
         self, from_date: str | None = None, to_date: str | None = None
     ) -> pd.DataFrame:
-        """Collect all tariff-related news articles."""
+        """
+        Collect all tariff-related news articles from multiple sources.
+
+        Sources:
+        1. GDELT API (free, no key, covers 2015+)
+        2. NewsAPI (requires NEWS_API_KEY for recent articles)
+        3. RSS feeds (free, latest articles only)
+        """
         all_articles = []
 
+        # Source 1: GDELT (primary, covers full historical range)
+        try:
+            from src.data_collection.gdelt_fetcher import GDELTFetcher
+            gdelt = GDELTFetcher()
+            gdelt_news = gdelt.fetch_tariff_news(
+                start_date=from_date or "2015-01-01",
+                end_date=to_date or "2025-12-31",
+            )
+            if not gdelt_news.empty:
+                for _, row in gdelt_news.iterrows():
+                    all_articles.append({
+                        "title": row.get("title", ""),
+                        "description": "",
+                        "content": row.get("title", ""),
+                        "source": row.get("source", ""),
+                        "published_at": row.get("published_at", ""),
+                        "url": row.get("url", ""),
+                        "query": row.get("query", "gdelt"),
+                        "collector": "gdelt",
+                    })
+                logger.info(f"GDELT: {len(gdelt_news)} tariff articles")
+        except Exception as e:
+            logger.error(f"GDELT tariff collection failed: {e}")
+
+        # Source 2: NewsAPI (if key available)
         queries = [
             "US China tariff trade war",
             "India tariff trade policy",
@@ -164,11 +196,18 @@ class NewsCollector:
             "retaliatory tariffs",
             "trade war escalation",
         ]
-
         for query in queries:
             articles = self.collect_from_newsapi(query, from_date, to_date)
             all_articles.extend(articles)
-            time.sleep(1)  # Rate limiting
+            time.sleep(1)
+
+        # Source 3: RSS feeds
+        rss_articles = self.collect_from_rss()
+        tariff_rss = [
+            a for a in rss_articles
+            if any(kw in a.get("title", "").lower() for kw in self.TARIFF_KEYWORDS)
+        ]
+        all_articles.extend(tariff_rss)
 
         df = pd.DataFrame(all_articles)
         if not df.empty:
@@ -182,9 +221,41 @@ class NewsCollector:
     def collect_conflict_news(
         self, from_date: str | None = None, to_date: str | None = None
     ) -> pd.DataFrame:
-        """Collect all conflict-related news articles."""
+        """
+        Collect all conflict-related news articles from multiple sources.
+
+        Sources:
+        1. GDELT API (free, no key, covers 2015+)
+        2. NewsAPI (requires NEWS_API_KEY for recent articles)
+        3. RSS feeds (free, latest articles only)
+        """
         all_articles = []
 
+        # Source 1: GDELT (primary)
+        try:
+            from src.data_collection.gdelt_fetcher import GDELTFetcher
+            gdelt = GDELTFetcher()
+            gdelt_news = gdelt.fetch_conflict_news(
+                start_date=from_date or "2015-01-01",
+                end_date=to_date or "2025-12-31",
+            )
+            if not gdelt_news.empty:
+                for _, row in gdelt_news.iterrows():
+                    all_articles.append({
+                        "title": row.get("title", ""),
+                        "description": "",
+                        "content": row.get("title", ""),
+                        "source": row.get("source", ""),
+                        "published_at": row.get("published_at", ""),
+                        "url": row.get("url", ""),
+                        "query": row.get("query", "gdelt"),
+                        "collector": "gdelt",
+                    })
+                logger.info(f"GDELT: {len(gdelt_news)} conflict articles")
+        except Exception as e:
+            logger.error(f"GDELT conflict collection failed: {e}")
+
+        # Source 2: NewsAPI
         queries = [
             "military conflict regional war",
             "Russia Ukraine war impact",
@@ -193,11 +264,18 @@ class NewsCollector:
             "Red Sea shipping crisis Houthi",
             "Taiwan strait tension",
         ]
-
         for query in queries:
             articles = self.collect_from_newsapi(query, from_date, to_date)
             all_articles.extend(articles)
             time.sleep(1)
+
+        # Source 3: RSS feeds
+        rss_articles = self.collect_from_rss()
+        conflict_rss = [
+            a for a in rss_articles
+            if any(kw in a.get("title", "").lower() for kw in self.CONFLICT_KEYWORDS)
+        ]
+        all_articles.extend(conflict_rss)
 
         df = pd.DataFrame(all_articles)
         if not df.empty:

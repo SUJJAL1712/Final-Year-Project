@@ -36,8 +36,9 @@ class FinancialSentimentAnalyzer:
         Analyze sentiment of a single article for each market.
 
         Returns:
-            Dict with overall sentiment, per-market sentiment,
-            sector sentiment, and volatility expectation
+            Dict with flat per-market sentiment columns:
+            us_sentiment, india_sentiment, china_sentiment
+            plus overall_sentiment, volatility_expectation, confidence
         """
         prompt = SENTIMENT_ANALYSIS_PROMPT.format(
             title=title,
@@ -46,9 +47,50 @@ class FinancialSentimentAnalyzer:
         )
 
         result = self.client.query_json(prompt, system=SENTIMENT_SYSTEM_PROMPT)
+
+        # Flatten nested market_specific_sentiment into top-level columns
+        # so compute_daily_sentiment can find us_sentiment, india_sentiment, etc.
+        mss = result.get("market_specific_sentiment", {})
+        if isinstance(mss, dict):
+            for market_key, data in mss.items():
+                flat_key = market_key.lower().replace(" ", "_") + "_sentiment"
+                if isinstance(data, dict):
+                    result[flat_key] = data.get("sentiment", 0.0)
+                elif isinstance(data, (int, float)):
+                    result[flat_key] = data
+            # Remove nested dict to keep DataFrame columns clean
+            result.pop("market_specific_sentiment", None)
+
         result["title"] = title
         result["date"] = date
         return result
+
+    def analyze_articles_individually(
+        self, articles_df: pd.DataFrame
+    ) -> pd.DataFrame:
+        """
+        Analyze each article individually (higher quality than batch).
+
+        Use this when you need detailed per-article sentiment with reasoning.
+        Falls back to batch mode if article count is high.
+        """
+        if len(articles_df) > 50:
+            logger.info(
+                f"{len(articles_df)} articles — switching to batch mode for efficiency"
+            )
+            return self.analyze_batch(articles_df)
+
+        results = []
+        for i, (_, row) in enumerate(articles_df.iterrows()):
+            logger.info(f"Analyzing article {i + 1}/{len(articles_df)}")
+            result = self.analyze_article(
+                title=row.get("title", ""),
+                content=row.get("content", row.get("title", "")),
+                date=str(row.get("published_at", row.get("date", ""))),
+            )
+            results.append(result)
+
+        return pd.DataFrame(results)
 
     def analyze_batch(self, articles_df: pd.DataFrame) -> pd.DataFrame:
         """

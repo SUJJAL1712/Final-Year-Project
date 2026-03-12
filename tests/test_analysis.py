@@ -10,8 +10,14 @@ from src.utils.helpers import compute_returns
 
 
 def _make_price_series(n: int = 500, seed: int = 42) -> pd.Series:
-    np.random.seed(seed)
-    prices = 100 * np.cumprod(1 + np.random.normal(0, 0.015, n))
+    """
+    Create a realistic price series with controlled randomness.
+
+    Uses a fixed seed for deterministic, reproducible test results.
+    """
+    rng = np.random.RandomState(seed)
+    daily_returns = rng.normal(0, 0.015, n)
+    prices = 100 * np.cumprod(1 + daily_returns)
     dates = pd.bdate_range("2020-01-01", periods=n)
     return pd.Series(prices, index=dates, name="close")
 
@@ -49,7 +55,10 @@ class TestEventStudyAnalyzer:
         assert result["n_events"] > 0
 
     def test_insufficient_data(self):
-        prices = pd.Series([100, 101], index=pd.bdate_range("2020-01-01", periods=2))
+        prices = pd.Series(
+            [100, 101],
+            index=pd.bdate_range("2020-01-01", periods=2),
+        )
         analyzer = EventStudyAnalyzer()
         result = analyzer.single_event_study(prices, "2020-01-01")
         assert "error" in result

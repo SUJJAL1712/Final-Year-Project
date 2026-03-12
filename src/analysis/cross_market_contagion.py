@@ -160,7 +160,16 @@ class CrossMarketContagionAnalyzer:
             # Determine source market from event
             markets_affected = event.get("markets_affected", [])
             if isinstance(markets_affected, str):
-                markets_affected = eval(markets_affected)
+                import ast
+                try:
+                    markets_affected = ast.literal_eval(markets_affected)
+                except (ValueError, SyntaxError):
+                    # Fallback: parse comma-separated string
+                    markets_affected = [
+                        m.strip().strip("'\"")
+                        for m in markets_affected.strip("[]").split(",")
+                        if m.strip()
+                    ]
 
             source_country = event.get("source_country", "")
             source_market = source_country if source_country in market_prices else (

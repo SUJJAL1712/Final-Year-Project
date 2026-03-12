@@ -89,19 +89,39 @@ class EventClassifier:
 
     def classify_known_events(self, events_df: pd.DataFrame) -> pd.DataFrame:
         """
-        Enrich known curated events with LLM-generated analysis.
+        Enrich events with LLM-generated analysis.
 
-        Takes the curated event database and adds LLM insights about
-        expected market impact, affected sectors, and cross-market dynamics.
+        Takes an event database and adds LLM insights about expected
+        market impact, affected sectors, and cross-market dynamics.
+        For each event, constructs a meaningful prompt body from available
+        fields rather than just passing the title as content.
         """
         enriched = []
 
         for _, event in events_df.iterrows():
-            logger.info(f"Enriching event: {event['event'][:60]}...")
+            title = str(event.get("event", ""))
+            logger.info(f"Enriching event: {title[:60]}...")
+
+            # Build richer content from available fields instead of
+            # just sending the title as content
+            content_parts = [f"Event: {title}"]
+            if "category" in event:
+                content_parts.append(f"Category: {event['category']}")
+            if "severity" in event:
+                content_parts.append(f"Severity: {event['severity']}")
+            if "source_country" in event:
+                content_parts.append(f"Source country: {event['source_country']}")
+            if "target_country" in event:
+                content_parts.append(f"Target country: {event['target_country']}")
+            if "markets_affected" in event:
+                content_parts.append(
+                    f"Markets affected: {event['markets_affected']}"
+                )
+            content = "\n".join(content_parts)
 
             result = self.classify_article(
-                title=event["event"],
-                content=event["event"],
+                title=title,
+                content=content,
                 date=str(event["date"]),
             )
 

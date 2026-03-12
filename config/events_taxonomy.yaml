@@ -116,6 +116,10 @@ event_categories:
         description: "Small-scale border incident"
         expected_impact: "mild_negative"
         severity_range: [2, 5]
+      military_action:
+        description: "Targeted military strike or operation"
+        expected_impact: "negative"
+        severity_range: [5, 9]
 
   geopolitical_tension_events:
     description: "Diplomatic and political tension events"

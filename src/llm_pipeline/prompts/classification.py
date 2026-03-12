@@ -25,7 +25,7 @@ TECH WAR EVENTS: chip_export_restriction, entity_list_addition, tech_investment_
 data_regulation
 
 MILITARY CONFLICT EVENTS: conflict_outbreak, conflict_escalation, conflict_deescalation,
-ceasefire, military_buildup, border_skirmish
+ceasefire, military_buildup, border_skirmish, military_action
 
 GEOPOLITICAL TENSION: diplomatic_breakdown, diplomatic_breakthrough, alliance_formation,
 territorial_dispute

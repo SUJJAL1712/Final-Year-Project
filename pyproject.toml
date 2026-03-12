@@ -13,6 +13,7 @@ readme = "README.md"
 testpaths = ["tests"]
 python_files = "test_*.py"
 addopts = "-v --tb=short"
+pythonpath = ["."]
 
 [tool.setuptools.packages.find]
 include = ["src*"]
