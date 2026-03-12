@@ -9,6 +9,7 @@ to keyword-based classification.
 NO hardcoded events — all data sourced from real news articles.
 """
 
+import hashlib
 import os
 import re
 
@@ -90,11 +91,31 @@ class TariffEventTracker:
         "entity_list_addition": 7,
     }
 
+    # Countries → which stock markets they affect (for spillover inference)
+    MARKET_IMPACT = {
+        "Russia": ["US", "India", "China"],
+        "Ukraine": ["US", "India", "China"],
+        "EU": ["US", "India", "China"],
+        "Japan": ["US", "China"],
+        "Korea": ["US", "China"],
+        "Vietnam": ["US", "China", "India"],
+        "Taiwan": ["US", "China"],
+        "Mexico": ["US"],
+        "Canada": ["US"],
+        "Iran": ["US", "India", "China"],
+    }
+
     def __init__(self):
         self.events_dir = DATA_DIR / "events"
         self.events_dir.mkdir(parents=True, exist_ok=True)
-        self.cache_path = self.events_dir / "tariff_events.csv"
         self.gdelt = GDELTFetcher()
+
+    def _cache_path_for(self, start_date: str, end_date: str) -> "Path":
+        """Generate date-range-aware cache path for tariff events."""
+        range_hash = hashlib.sha256(
+            f"tariff|{start_date}|{end_date}".encode()
+        ).hexdigest()[:10]
+        return self.events_dir / f"tariff_events_{range_hash}.csv"
 
     def get_tariff_events(
         self,
@@ -111,9 +132,11 @@ class TariffEventTracker:
         3. Deduplicate into distinct events (weekly grouping)
         4. Cache to disk for fast reload
         """
-        if self.cache_path.exists() and not force_refresh:
-            logger.info(f"Loading cached tariff events from {self.cache_path}")
-            df = pd.read_csv(self.cache_path, parse_dates=["date"])
+        cache_path = self._cache_path_for(start_date, end_date)
+
+        if cache_path.exists() and not force_refresh:
+            logger.info(f"Loading cached tariff events from {cache_path}")
+            df = pd.read_csv(cache_path, parse_dates=["date"])
             return df
 
         # Step 1: Fetch from GDELT
@@ -143,7 +166,7 @@ class TariffEventTracker:
         events["event_type"] = "tariff"
 
         # Step 4: Cache
-        events.to_csv(self.cache_path, index=False)
+        events.to_csv(cache_path, index=False)
         logger.info(f"Saved {len(events)} tariff events to cache")
 
         return events
@@ -155,9 +178,21 @@ class TariffEventTracker:
         classifier = EventClassifier()
         articles = news_df.copy()
 
-        # Ensure required columns for classify_batch
-        if "content" not in articles.columns:
-            articles["content"] = articles["title"]
+        # GDELT DOC 2.0 returns metadata but not article body text.
+        # Build a descriptive content string from available metadata
+        # instead of pretending content = title.
+        if "content" not in articles.columns or (
+            articles["content"].astype(str) == articles["title"].astype(str)
+        ).all():
+            articles["content"] = articles.apply(
+                lambda r: (
+                    f"Headline: {r.get('title', '')}\n"
+                    f"Source: {r.get('source', 'unknown')}\n"
+                    f"Country: {r.get('source_country', 'unknown')}\n"
+                    f"Tone: {r.get('tone', 'N/A')}"
+                ),
+                axis=1,
+            )
 
         classified = classifier.classify_batch(articles)
 
@@ -188,9 +223,18 @@ class TariffEventTracker:
         else:
             events["affected_sectors"] = [[] for _ in range(len(events))]
 
-        if "countries_involved" in classified.columns:
+        # Use affected_markets from LLM if available, otherwise infer
+        # from countries_involved using the market impact mapping.
+        if "affected_markets" in classified.columns:
+            events["markets_affected"] = classified["affected_markets"].apply(
+                lambda x: (
+                    x if isinstance(x, list)
+                    else self._infer_affected_markets([])
+                )
+            )
+        elif "countries_involved" in classified.columns:
             events["markets_affected"] = classified["countries_involved"].apply(
-                lambda x: x if isinstance(x, list) else ["US", "China"]
+                self._infer_affected_markets
             )
         else:
             events["markets_affected"] = [
@@ -244,6 +288,9 @@ class TariffEventTracker:
             if isinstance(tone, (int, float)) and abs(tone) > 5:
                 severity = min(10, severity + 1)
 
+            # Infer affected markets from countries (not raw country names)
+            affected_markets = self._infer_affected_markets(countries)
+
             records.append({
                 "date": pd.to_datetime(row.get("published_at"), errors="coerce"),
                 "event": title,
@@ -252,11 +299,33 @@ class TariffEventTracker:
                 "source_country": source,
                 "target_country": target,
                 "affected_sectors": [],
-                "markets_affected": countries if countries else ["US", "China"],
+                "markets_affected": affected_markets,
                 "confidence": 0.6,
             })
 
         return pd.DataFrame(records).dropna(subset=["date"])
+
+    def _infer_affected_markets(self, countries: list) -> list:
+        """
+        Infer which stock markets (US, India, China) are affected based
+        on countries involved. Handles spillover from non-market countries
+        like Russia, Ukraine, EU, etc.
+        """
+        if not isinstance(countries, list):
+            return ["US", "China"]
+
+        markets = set()
+        for c in countries:
+            if c in ("US", "India", "China"):
+                markets.add(c)
+            elif c in self.MARKET_IMPACT:
+                markets.update(self.MARKET_IMPACT[c])
+
+        # Default for tariff events: US-China bilateral
+        if not markets:
+            markets = {"US", "China"}
+
+        return sorted(markets)
 
     def _deduplicate_events(self, events: pd.DataFrame) -> pd.DataFrame:
         """Deduplicate by keeping highest-severity event per category per week."""

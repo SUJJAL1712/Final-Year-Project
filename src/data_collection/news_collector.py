@@ -174,10 +174,19 @@ class NewsCollector:
             )
             if not gdelt_news.empty:
                 for _, row in gdelt_news.iterrows():
+                    # GDELT DOC 2.0 API returns metadata but not article
+                    # body text. Build a descriptive content string from
+                    # all available metadata instead of faking content=title.
+                    meta_content = (
+                        f"Headline: {row.get('title', '')}\n"
+                        f"Source: {row.get('source', '')}\n"
+                        f"Source Country: {row.get('source_country', '')}\n"
+                        f"GDELT Tone: {row.get('tone', 'N/A')}"
+                    )
                     all_articles.append({
                         "title": row.get("title", ""),
                         "description": "",
-                        "content": row.get("title", ""),
+                        "content": meta_content,
                         "source": row.get("source", ""),
                         "published_at": row.get("published_at", ""),
                         "url": row.get("url", ""),
@@ -241,10 +250,18 @@ class NewsCollector:
             )
             if not gdelt_news.empty:
                 for _, row in gdelt_news.iterrows():
+                    # GDELT DOC 2.0 API returns metadata but not article
+                    # body text — build descriptive content from metadata.
+                    meta_content = (
+                        f"Headline: {row.get('title', '')}\n"
+                        f"Source: {row.get('source', '')}\n"
+                        f"Source Country: {row.get('source_country', '')}\n"
+                        f"GDELT Tone: {row.get('tone', 'N/A')}"
+                    )
                     all_articles.append({
                         "title": row.get("title", ""),
                         "description": "",
-                        "content": row.get("title", ""),
+                        "content": meta_content,
                         "source": row.get("source", ""),
                         "published_at": row.get("published_at", ""),
                         "url": row.get("url", ""),

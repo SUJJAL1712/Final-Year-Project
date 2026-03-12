@@ -53,18 +53,38 @@ BATCH_CLASSIFICATION_PROMPT = """Analyze the following {count} news headlines an
 HEADLINES:
 {headlines}
 
-For each headline, provide a classification. Respond with a JSON array:
+For each headline, provide a classification. Use these categories:
+
+TARIFF: tariff_imposition, tariff_increase, tariff_reduction, tariff_removal,
+retaliatory_tariff, tariff_threat, tariff_negotiation
+TRADE WAR: trade_war_escalation, trade_war_deescalation, trade_deal_signed,
+trade_deal_collapsed, export_ban, sanctions_imposed, sanctions_lifted
+TECH WAR: chip_export_restriction, entity_list_addition
+MILITARY: conflict_outbreak, conflict_escalation, conflict_deescalation,
+ceasefire, military_buildup, border_skirmish, military_action
+GEOPOLITICAL: diplomatic_breakdown, diplomatic_breakthrough, territorial_dispute
+SUPPLY CHAIN: shipping_disruption, supply_chain_diversification
+
+Respond with a JSON array:
 [
     {{
         "headline_index": 0,
-        "event_subcategory": "<category>",
-        "severity": <1-10>,
-        "countries_involved": ["<country>"],
+        "event_subcategory": "<category from above>",
+        "severity": <1-10 integer>,
+        "countries_involved": ["<country1>", "<country2>"],
+        "source_country": "<country initiating the action>",
+        "target_country": "<country targeted by the action>",
+        "affected_sectors": ["<sector1>", "<sector2>"],
+        "affected_markets": ["US", "India", "China"],
         "expected_market_direction": "<positive|negative|mixed|uncertain>",
         "confidence": <0.0-1.0>
     }},
     ...
 ]
 
-Only classify headlines that are clearly about tariffs, trade conflicts, military conflicts,
-or geopolitical tensions. For irrelevant headlines, set category to "not_relevant"."""
+For affected_markets, only include markets from ["US", "India", "China"] that are
+directly or indirectly impacted. For affected_sectors, use relevant sectors like
+"technology", "agriculture", "energy", "defense", "manufacturing", "finance", etc.
+
+Only classify headlines clearly about tariffs, trade conflicts, military conflicts,
+or geopolitical tensions. For irrelevant headlines, set event_subcategory to "not_relevant"."""

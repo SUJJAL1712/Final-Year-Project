@@ -187,10 +187,12 @@ def main():
     setup_logger("INFO")
 
     if args.all or not any([args.stocks, args.news, args.events, args.sentiment]):
-        # Full pipeline
-        build_events()
+        # Full pipeline: build_events() fetches from GDELT internally
+        # and classifies events. No need to call collect_gdelt_news()
+        # separately — GDELT results are cached per-query, so subsequent
+        # calls won't re-hit the API, but we avoid redundant processing.
         collect_stocks()
-        collect_gdelt_news()
+        build_events()
         collect_rss_news()
         collect_newsapi_news()
         run_sentiment_analysis()

@@ -9,6 +9,7 @@ back to keyword-based classification.
 NO hardcoded events — all data sourced from real news articles.
 """
 
+import hashlib
 import os
 import re
 
@@ -116,8 +117,14 @@ class ConflictEventTracker:
     def __init__(self):
         self.events_dir = DATA_DIR / "events"
         self.events_dir.mkdir(parents=True, exist_ok=True)
-        self.cache_path = self.events_dir / "conflict_events.csv"
         self.gdelt = GDELTFetcher()
+
+    def _cache_path_for(self, start_date: str, end_date: str) -> "Path":
+        """Generate date-range-aware cache path for conflict events."""
+        range_hash = hashlib.sha256(
+            f"conflict|{start_date}|{end_date}".encode()
+        ).hexdigest()[:10]
+        return self.events_dir / f"conflict_events_{range_hash}.csv"
 
     def get_conflict_events(
         self,
@@ -134,9 +141,11 @@ class ConflictEventTracker:
         3. Deduplicate into distinct events (weekly grouping)
         4. Cache to disk for fast reload
         """
-        if self.cache_path.exists() and not force_refresh:
-            logger.info(f"Loading cached conflict events from {self.cache_path}")
-            return pd.read_csv(self.cache_path, parse_dates=["date"])
+        cache_path = self._cache_path_for(start_date, end_date)
+
+        if cache_path.exists() and not force_refresh:
+            logger.info(f"Loading cached conflict events from {cache_path}")
+            return pd.read_csv(cache_path, parse_dates=["date"])
 
         # Step 1: Fetch from GDELT
         logger.info("Fetching conflict news from GDELT...")
@@ -165,7 +174,7 @@ class ConflictEventTracker:
         events["event_type"] = "conflict"
 
         # Step 4: Cache
-        events.to_csv(self.cache_path, index=False)
+        events.to_csv(cache_path, index=False)
         logger.info(f"Saved {len(events)} conflict events to cache")
 
         return events
@@ -176,8 +185,22 @@ class ConflictEventTracker:
 
         classifier = EventClassifier()
         articles = news_df.copy()
-        if "content" not in articles.columns:
-            articles["content"] = articles["title"]
+
+        # GDELT DOC 2.0 returns metadata but not article body text.
+        # Build a descriptive content string from available metadata
+        # instead of pretending content = title.
+        if "content" not in articles.columns or (
+            articles["content"].astype(str) == articles["title"].astype(str)
+        ).all():
+            articles["content"] = articles.apply(
+                lambda r: (
+                    f"Headline: {r.get('title', '')}\n"
+                    f"Source: {r.get('source', 'unknown')}\n"
+                    f"Country: {r.get('source_country', 'unknown')}\n"
+                    f"Tone: {r.get('tone', 'N/A')}"
+                ),
+                axis=1,
+            )
 
         classified = classifier.classify_batch(articles)
         if classified.empty:
@@ -204,9 +227,18 @@ class ConflictEventTracker:
         else:
             events["primary_countries"] = [[] for _ in range(len(events))]
 
-        events["affected_markets"] = events["primary_countries"].apply(
-            self._infer_affected_markets
-        )
+        # Use affected_markets from LLM if available, otherwise infer
+        if "affected_markets" in classified.columns:
+            events["affected_markets"] = classified["affected_markets"].apply(
+                lambda x: (
+                    x if isinstance(x, list)
+                    else self._infer_affected_markets([])
+                )
+            )
+        else:
+            events["affected_markets"] = events["primary_countries"].apply(
+                self._infer_affected_markets
+            )
 
         if "affected_sectors" in classified.columns:
             events["affected_sectors"] = classified["affected_sectors"].apply(
@@ -312,15 +344,22 @@ class ConflictEventTracker:
         """Backward-compatible alias for get_conflict_events."""
         return self.get_conflict_events()
 
-    def get_combined_geopolitical_events(self) -> pd.DataFrame:
+    def get_combined_geopolitical_events(
+        self, force_refresh: bool = False
+    ) -> pd.DataFrame:
         """
         Combine tariff and conflict events into a unified timeline.
         This is the master event database for the entire analysis.
         """
         from src.data_collection.tariff_tracker import TariffEventTracker
 
-        cache_path = self.events_dir / "all_geopolitical_events.csv"
-        if cache_path.exists():
+        # Date-range-aware combined cache
+        range_hash = hashlib.sha256(
+            b"combined_geopolitical_events"
+        ).hexdigest()[:10]
+        cache_path = self.events_dir / f"all_geopolitical_events_{range_hash}.csv"
+
+        if cache_path.exists() and not force_refresh:
             logger.info(f"Loading cached combined events from {cache_path}")
             return pd.read_csv(cache_path, parse_dates=["date"])
 

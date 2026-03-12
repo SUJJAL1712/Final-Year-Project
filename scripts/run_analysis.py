@@ -102,8 +102,23 @@ def run_llm_analysis(events_df: pd.DataFrame, skip_llm: bool) -> pd.DataFrame:
     cache_path = RESULTS_DIR / "daily_sentiment.csv"
 
     if cache_path.exists():
-        logger.info(f"Loading cached sentiment from {cache_path}")
-        return pd.read_csv(cache_path, parse_dates=["date"], index_col="date")
+        try:
+            cached = pd.read_csv(cache_path, parse_dates=["date"], index_col="date")
+            if not cached.empty:
+                cache_max = cached.index.max()
+                age_days = (pd.Timestamp.now() - cache_max).days
+                if age_days < 90:
+                    logger.info(
+                        f"Loading cached sentiment from {cache_path} "
+                        f"({len(cached)} days, latest: {cache_max.date()})"
+                    )
+                    return cached
+                logger.info(
+                    f"Sentiment cache stale (latest: {cache_max.date()}, "
+                    f"{age_days} days old), refreshing..."
+                )
+        except Exception:
+            pass
 
     # Use GDELT news articles for sentiment analysis
     gdelt = GDELTFetcher()
@@ -226,11 +241,19 @@ def run_cross_market_contagion(
             )
             logger.info(f"Contagion: {len(contagion_results)} events analyzed")
 
-    # India trade diversion test (US-China tariff events only)
+    # India trade diversion test (US-China bilateral tariff events only)
     if "US" in market_prices and "India" in market_prices and "China" in market_prices:
-        tariff_events = events_df[
-            events_df["event_type"] == "tariff"
-        ] if "event_type" in events_df.columns else pd.DataFrame()
+        # Filter to US-China bilateral tariff events specifically
+        tariff_events = pd.DataFrame()
+        if "event_type" in events_df.columns:
+            tariff_all = events_df[events_df["event_type"] == "tariff"]
+            if not tariff_all.empty and "markets_affected" in tariff_all.columns:
+                # Keep only events that affect BOTH US and China
+                tariff_events = tariff_all[
+                    tariff_all["markets_affected"].apply(
+                        lambda x: "US" in str(x) and "China" in str(x)
+                    )
+                ]
 
         if not tariff_events.empty:
             diversion = contagion.india_trade_diversion_test(

@@ -1,9 +1,16 @@
 """
-GDELT Project API client for fetching real historical news articles.
+GDELT Project API client for fetching real news articles.
 
 The GDELT Project (https://www.gdeltproject.org/) monitors the world's news
-media and provides free API access to search articles. The DOC 2.0 API
-allows searching articles by keywords with date ranges covering 2015+.
+media and provides free API access to search articles via the DOC 2.0 API.
+
+IMPORTANT LIMITATION: The GDELT DOC 2.0 API has a rolling lookback window
+of approximately 3 months. Queries for dates older than ~3 months return
+empty results. To build historical coverage:
+  - Run this periodically so each quarter's data is cached locally before
+    it falls out of the API window.
+  - Locally cached results from previous runs are always preserved.
+  - Per-query caches are keyed by (query, start_date, end_date).
 
 This is the PRIMARY data source for geopolitical event news in this project.
 No API key is required — GDELT is completely free.
@@ -56,14 +63,14 @@ CONFLICT_QUERIES = [
 
 class GDELTFetcher:
     """
-    Fetches real historical news from the GDELT Project API.
+    Fetches real news from the GDELT Project DOC 2.0 API.
 
     Features:
     - No API key required (free and open)
-    - Covers articles from 2015 onwards
-    - Results cached to disk to avoid repeat API calls
+    - Rolling ~3-month lookback window (older queries return empty)
+    - Results cached per-query to disk — preserves historical data
     - Rate limiting to respect GDELT's fair-use guidelines
-    - Chunked date ranges for comprehensive coverage
+    - Quarterly date chunks for fine-grained caching
     """
 
     def __init__(self, cache_dir: Path | None = None):
@@ -80,7 +87,7 @@ class GDELTFetcher:
         self._last_request_time = time.time()
 
     def _cache_key(self, query: str, start: str, end: str) -> str:
-        """Generate a deterministic cache key for a query."""
+        """Generate a deterministic cache key for a query + date range."""
         raw = f"{query}|{start}|{end}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
@@ -169,13 +176,19 @@ class GDELTFetcher:
         cache_name: str = "articles",
     ) -> pd.DataFrame:
         """
-        Fetch articles across multiple queries and date chunks.
+        Fetch articles across multiple queries and quarterly date chunks.
 
-        GDELT limits results per query, so we break the date range into
-        yearly chunks and run each query separately for comprehensive coverage.
+        GDELT DOC 2.0 API has a ~3-month rolling lookback window, so older
+        queries return empty from the API. However, per-query results are
+        cached locally (keyed by query+dates), so data from previous runs
+        is preserved. We use quarterly chunks for fine-grained caching.
         """
-        # Check combined cache first
-        cache_file = self.cache_dir / f"{cache_name}_combined.csv"
+        # Combined cache key includes date range to prevent stale cross-range data
+        range_hash = hashlib.sha256(
+            f"{cache_name}|{start_date}|{end_date}".encode()
+        ).hexdigest()[:12]
+        cache_file = self.cache_dir / f"{cache_name}_{range_hash}_combined.csv"
+
         cached = self._get_cached(cache_file)
         if cached is not None:
             logger.info(
@@ -184,49 +197,76 @@ class GDELTFetcher:
             return cached
 
         all_articles = []
+        empty_api_chunks = 0
+        total_api_chunks = 0
 
-        # Break into yearly chunks for better coverage
+        # Quarterly date boundaries
+        QUARTERS = [
+            ("01-01", "03-31"),
+            ("04-01", "06-30"),
+            ("07-01", "09-30"),
+            ("10-01", "12-31"),
+        ]
+
         start_year = max(int(start_date[:4]), 2015)
-        end_year = min(int(end_date[:4]), 2025)
+        end_year = min(int(end_date[:4]), 2026)
 
         for year in range(start_year, end_year + 1):
-            chunk_start = f"{year}-01-01"
-            chunk_end = f"{year}-12-31"
+            for q_start_md, q_end_md in QUARTERS:
+                chunk_start = f"{year}-{q_start_md}"
+                chunk_end = f"{year}-{q_end_md}"
 
-            for query in queries:
-                key = self._cache_key(query, chunk_start, chunk_end)
-                query_cache = self.cache_dir / f"{cache_name}_{key}.json"
+                # Skip chunks fully outside the requested range
+                if chunk_end < start_date[:10] or chunk_start > end_date[:10]:
+                    continue
 
-                # Check per-query cache
-                if query_cache.exists():
+                for query in queries:
+                    key = self._cache_key(query, chunk_start, chunk_end)
+                    query_cache = self.cache_dir / f"{cache_name}_{key}.json"
+
+                    # Check per-query cache first
+                    if query_cache.exists():
+                        try:
+                            with open(query_cache, "r", encoding="utf-8") as f:
+                                cached_articles = json.load(f)
+                            all_articles.extend(cached_articles)
+                            continue
+                        except Exception:
+                            pass
+
+                    # Query GDELT API
+                    total_api_chunks += 1
+                    articles = self._query_gdelt(
+                        query, chunk_start, chunk_end, max_records=250
+                    )
+
+                    # Add query metadata
+                    for a in articles:
+                        a["query"] = query[:60]
+
+                    if not articles:
+                        empty_api_chunks += 1
+                    else:
+                        logger.info(
+                            f"GDELT {chunk_start[:7]} [{query[:40]}...]: "
+                            f"{len(articles)} articles"
+                        )
+
+                    # Cache per-query results (even empty to avoid re-querying)
                     try:
-                        with open(query_cache, "r", encoding="utf-8") as f:
-                            cached_articles = json.load(f)
-                        all_articles.extend(cached_articles)
-                        continue
-                    except Exception:
-                        pass
+                        with open(query_cache, "w", encoding="utf-8") as f:
+                            json.dump(articles, f, default=str)
+                    except Exception as e:
+                        logger.warning(f"Failed to cache query results: {e}")
 
-                # Query GDELT
-                articles = self._query_gdelt(
-                    query, chunk_start, chunk_end, max_records=250
-                )
+                    all_articles.extend(articles)
 
-                # Add query metadata
-                for a in articles:
-                    a["query"] = query[:60]
-
-                # Cache per-query results
-                try:
-                    with open(query_cache, "w", encoding="utf-8") as f:
-                        json.dump(articles, f, default=str)
-                except Exception as e:
-                    logger.warning(f"Failed to cache query results: {e}")
-
-                all_articles.extend(articles)
-                logger.info(
-                    f"GDELT {year} [{query[:40]}...]: {len(articles)} articles"
-                )
+        if total_api_chunks > 0 and empty_api_chunks > 0:
+            logger.info(
+                f"GDELT DOC 2.0: {empty_api_chunks}/{total_api_chunks} API "
+                f"query-chunks returned empty (expected for dates older than "
+                f"~3 months — the API has a rolling lookback window)"
+            )
 
         if not all_articles:
             logger.warning(f"No {cache_name} articles found from GDELT")

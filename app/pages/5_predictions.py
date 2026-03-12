@@ -81,13 +81,27 @@ def load_and_build_features(sym, threshold, horizon):
 
     # Load events (from GDELT, not hardcoded)
     tracker = ConflictEventTracker()
-    events = tracker.get_combined_geopolitical_events()
+    all_events = tracker.get_combined_geopolitical_events()
+
+    # Filter events to the target market to avoid feature contamination
+    market_id = SYMBOL_TO_MARKET.get(sym, "us")
+    market_name = {"us": "US", "india": "India", "china": "China"}.get(
+        market_id, market_id.capitalize()
+    )
+
+    if not all_events.empty and "markets_affected" in all_events.columns:
+        events = all_events[
+            all_events["markets_affected"].apply(
+                lambda x: market_name in str(x)
+            )
+        ].reset_index(drop=True)
+    else:
+        events = all_events
 
     # Load cached LLM sentiment if available
     sentiment_df = _load_sentiment_cache()
-    market_id = SYMBOL_TO_MARKET.get(sym, "us")
 
-    # Build features with all available data
+    # Build features with market-filtered events
     engineer = FeatureEngineer(threshold)
     features = engineer.build_unified_features(
         prices,
