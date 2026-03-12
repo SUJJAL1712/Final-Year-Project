@@ -105,8 +105,8 @@ class GDELTFetcher:
     def _query_gdelt(
         self,
         query: str,
-        start_date: str = "2015-01-01",
-        end_date: str = "2025-12-31",
+        start_date: str | None = None,
+        end_date: str | None = None,
         max_records: int = 250,
         mode: str = "artlist",
     ) -> list[dict]:
@@ -115,14 +115,16 @@ class GDELTFetcher:
 
         Args:
             query: GDELT search query string
-            start_date: Start date (YYYY-MM-DD)
-            end_date: End date (YYYY-MM-DD)
+            start_date: Start date (YYYY-MM-DD). Defaults to ANALYSIS_START.
+            end_date: End date (YYYY-MM-DD). Defaults to ANALYSIS_END.
             max_records: Max records to return (up to 250 per request)
             mode: 'artlist' for article list, 'timeline' for timeline
 
         Returns:
             List of article dicts with title, url, published_at, source, tone
         """
+        start_date = start_date or ANALYSIS_START
+        end_date = end_date or ANALYSIS_END
         self._rate_limit()
 
         # GDELT expects dates as YYYYMMDDHHMMSS
@@ -358,7 +360,13 @@ class GDELTFetcher:
             return pd.DataFrame()
 
         combined = pd.concat(frames, ignore_index=True)
-        combined = combined.drop_duplicates(subset=["title"], keep="first")
+        # Dedup by (title, date) — same headline on different dates may be
+        # distinct events; syndicated copies on the same date are collapsed.
+        combined["_pub_date"] = combined["published_at"].dt.date
+        combined = combined.drop_duplicates(
+            subset=["title", "_pub_date"], keep="first"
+        )
+        combined = combined.drop(columns=["_pub_date"])
         combined = combined.sort_values("published_at").reset_index(drop=True)
 
         return combined

@@ -323,23 +323,35 @@ class ConflictEventTracker:
         return sorted(markets)
 
     def _deduplicate_events(self, events: pd.DataFrame) -> pd.DataFrame:
-        """Deduplicate by keeping highest-severity per category per 3-day window.
+        """Deduplicate by keeping highest-severity per (period, category, region).
 
-        Uses 3-day periods instead of weekly to preserve multiple real events
-        in the same category that occur days apart.
+        Uses 2-day periods AND a region key derived from involved countries,
+        so genuinely different conflicts (e.g., Russia-Ukraine vs Israel-Gaza)
+        are never merged even if they share a category and happen close together.
+        Only syndicated copies of the same underlying event are collapsed.
         """
         if events.empty:
             return events
 
         events = events.sort_values("date")
+        # 2-day periods for fine granularity
         events["_period"] = (
-            (events["date"] - pd.Timestamp("2015-01-01")).dt.days // 3
+            (events["date"] - pd.Timestamp("2015-01-01")).dt.days // 2
+        )
+        # Region key from involved countries — events about different conflicts
+        # (different country pairs) are always kept as distinct events.
+        events["_region_key"] = events["primary_countries"].apply(
+            lambda x: (
+                "|".join(sorted(x)) if isinstance(x, list) and x else "unknown"
+            )
         )
 
         deduped = (
             events.sort_values("severity", ascending=False)
-            .drop_duplicates(subset=["_period", "category"], keep="first")
-            .drop(columns=["_period"])
+            .drop_duplicates(
+                subset=["_period", "category", "_region_key"], keep="first"
+            )
+            .drop(columns=["_period", "_region_key"])
             .sort_values("date")
             .reset_index(drop=True)
         )

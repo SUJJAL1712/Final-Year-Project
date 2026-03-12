@@ -70,12 +70,27 @@ def collect_gdelt_news():
 
 
 def collect_rss_news():
-    """Collect latest news from RSS feeds (free, no API key)."""
+    """Collect latest news from RSS feeds (free, no API key).
+
+    Persists articles to CSV so the sentiment pipeline can reload them.
+    """
+    import pandas as pd
+
     logger.info("=== Collecting RSS News ===")
     collector = NewsCollector()
 
     rss_articles = collector.collect_from_rss()
     logger.info(f"RSS feeds: {len(rss_articles)} relevant articles")
+
+    # Save to CSV so run_sentiment_analysis() can pick them up
+    if rss_articles:
+        rss_df = pd.DataFrame(rss_articles)
+        rss_df["published_at"] = pd.to_datetime(
+            rss_df["published_at"], errors="coerce"
+        )
+        rss_path = collector.data_dir / "rss_articles.csv"
+        rss_df.to_csv(rss_path, index=False)
+        logger.info(f"Saved {len(rss_df)} RSS articles to {rss_path}")
 
     return rss_articles
 
@@ -187,7 +202,12 @@ def run_sentiment_analysis():
 
     # Also load any cached NewsAPI/RSS articles for richer coverage
     news_dir = DATA_DIR / "raw" / "news"
-    for cached_file in ["tariff_news.csv", "conflict_news.csv", "newsapi_articles.csv"]:
+    for cached_file in [
+        "tariff_news.csv",
+        "conflict_news.csv",
+        "newsapi_articles.csv",
+        "rss_articles.csv",
+    ]:
         cached_path = news_dir / cached_file
         if cached_path.exists():
             try:
@@ -198,9 +218,17 @@ def run_sentiment_analysis():
             except Exception as e:
                 logger.warning(f"Failed to load {cached_file}: {e}")
 
-    # Deduplicate across sources
+    # Deduplicate across sources by (title, date) — same headline on
+    # different dates may be distinct events, only collapse same-day copies.
     if not news.empty:
-        news = news.drop_duplicates(subset=["title"], keep="first")
+        news["published_at"] = pd.to_datetime(
+            news["published_at"], errors="coerce"
+        )
+        news["_pub_date"] = news["published_at"].dt.date
+        news = news.drop_duplicates(
+            subset=["title", "_pub_date"], keep="first"
+        )
+        news = news.drop(columns=["_pub_date"])
 
     if news.empty:
         logger.warning("No news for sentiment analysis")

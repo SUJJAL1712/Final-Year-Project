@@ -330,25 +330,35 @@ class TariffEventTracker:
         return sorted(markets)
 
     def _deduplicate_events(self, events: pd.DataFrame) -> pd.DataFrame:
-        """Deduplicate by keeping highest-severity event per category per 3-day window.
+        """Deduplicate by keeping highest-severity event per (period, category, country-pair).
 
-        Uses 3-day periods instead of weekly to preserve multiple real events
-        in the same category that happen days apart (e.g., tariff announcement
-        Monday, retaliatory response Friday).
+        Uses 2-day periods AND a country-pair key so that genuinely different
+        events (e.g., US-China tariff and US-India tariff on the same day)
+        are never merged. Only syndicated copies of the same underlying event
+        are collapsed.
         """
         if events.empty:
             return events
 
         events = events.sort_values("date")
-        # 3-day periods from epoch for finer granularity than weekly
+        # 2-day periods for fine granularity
         events["_period"] = (
-            (events["date"] - pd.Timestamp("2015-01-01")).dt.days // 3
+            (events["date"] - pd.Timestamp("2015-01-01")).dt.days // 2
+        )
+        # Country-pair key: events about different bilateral pairs are distinct
+        events["_country_key"] = events.apply(
+            lambda r: (
+                f"{r.get('source_country', '')}|{r.get('target_country', '')}"
+            ),
+            axis=1,
         )
 
         deduped = (
             events.sort_values("severity", ascending=False)
-            .drop_duplicates(subset=["_period", "category"], keep="first")
-            .drop(columns=["_period"])
+            .drop_duplicates(
+                subset=["_period", "category", "_country_key"], keep="first"
+            )
+            .drop(columns=["_period", "_country_key"])
             .sort_values("date")
             .reset_index(drop=True)
         )
