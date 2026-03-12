@@ -26,7 +26,7 @@ import requests
 import pandas as pd
 from loguru import logger
 
-from src.utils.config import DATA_DIR
+from src.utils.config import DATA_DIR, ANALYSIS_START, ANALYSIS_END
 
 
 # GDELT DOC 2.0 API endpoint
@@ -98,8 +98,8 @@ class GDELTFetcher:
                 df = pd.read_csv(cache_file, parse_dates=["published_at"])
                 if not df.empty:
                     return df
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Cache file unreadable ({cache_file}): {e}")
         return None
 
     def _query_gdelt(
@@ -171,8 +171,8 @@ class GDELTFetcher:
     def _fetch_chunked(
         self,
         queries: list[str],
-        start_date: str = "2015-01-01",
-        end_date: str = "2025-12-31",
+        start_date: str | None = None,
+        end_date: str | None = None,
         cache_name: str = "articles",
     ) -> pd.DataFrame:
         """
@@ -183,6 +183,9 @@ class GDELTFetcher:
         cached locally (keyed by query+dates), so data from previous runs
         is preserved. We use quarterly chunks for fine-grained caching.
         """
+        start_date = start_date or ANALYSIS_START
+        end_date = end_date or ANALYSIS_END
+
         # Combined cache key includes date range to prevent stale cross-range data
         range_hash = hashlib.sha256(
             f"{cache_name}|{start_date}|{end_date}".encode()
@@ -209,7 +212,7 @@ class GDELTFetcher:
         ]
 
         start_year = max(int(start_date[:4]), 2015)
-        end_year = min(int(end_date[:4]), 2026)
+        end_year = int(end_date[:4])
 
         for year in range(start_year, end_year + 1):
             for q_start_md, q_end_md in QUARTERS:
@@ -231,8 +234,8 @@ class GDELTFetcher:
                                 cached_articles = json.load(f)
                             all_articles.extend(cached_articles)
                             continue
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Corrupt query cache {query_cache}: {e}")
 
                     # Query GDELT API
                     total_api_chunks += 1
@@ -279,8 +282,11 @@ class GDELTFetcher:
             df["published_at"], format="mixed", errors="coerce"
         )
 
-        # Deduplicate by title
-        df = df.drop_duplicates(subset=["title"], keep="first")
+        # Deduplicate by (title, date) — same headline on different dates
+        # may be distinct events; syndicated copies on the same date are collapsed
+        df["_pub_date"] = df["published_at"].dt.date
+        df = df.drop_duplicates(subset=["title", "_pub_date"], keep="first")
+        df = df.drop(columns=["_pub_date"])
 
         # Filter to English articles only
         if "language" in df.columns:
@@ -299,8 +305,8 @@ class GDELTFetcher:
 
     def fetch_tariff_news(
         self,
-        start_date: str = "2015-01-01",
-        end_date: str = "2025-12-31",
+        start_date: str | None = None,
+        end_date: str | None = None,
     ) -> pd.DataFrame:
         """
         Fetch tariff-related news articles from GDELT.
@@ -317,8 +323,8 @@ class GDELTFetcher:
 
     def fetch_conflict_news(
         self,
-        start_date: str = "2015-01-01",
-        end_date: str = "2025-12-31",
+        start_date: str | None = None,
+        end_date: str | None = None,
     ) -> pd.DataFrame:
         """
         Fetch conflict-related news articles from GDELT.
@@ -335,8 +341,8 @@ class GDELTFetcher:
 
     def fetch_all_news(
         self,
-        start_date: str = "2015-01-01",
-        end_date: str = "2025-12-31",
+        start_date: str | None = None,
+        end_date: str | None = None,
     ) -> pd.DataFrame:
         """Fetch both tariff and conflict news, combined and deduplicated."""
         tariff = self.fetch_tariff_news(start_date, end_date)

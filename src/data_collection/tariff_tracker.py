@@ -16,7 +16,7 @@ import re
 import pandas as pd
 from loguru import logger
 
-from src.utils.config import DATA_DIR
+from src.utils.config import DATA_DIR, ANALYSIS_START, ANALYSIS_END
 from src.data_collection.gdelt_fetcher import GDELTFetcher
 
 
@@ -119,8 +119,8 @@ class TariffEventTracker:
 
     def get_tariff_events(
         self,
-        start_date: str = "2015-01-01",
-        end_date: str = "2025-12-31",
+        start_date: str | None = None,
+        end_date: str | None = None,
         force_refresh: bool = False,
     ) -> pd.DataFrame:
         """
@@ -132,6 +132,8 @@ class TariffEventTracker:
         3. Deduplicate into distinct events (weekly grouping)
         4. Cache to disk for fast reload
         """
+        start_date = start_date or ANALYSIS_START
+        end_date = end_date or ANALYSIS_END
         cache_path = self._cache_path_for(start_date, end_date)
 
         if cache_path.exists() and not force_refresh:
@@ -328,18 +330,25 @@ class TariffEventTracker:
         return sorted(markets)
 
     def _deduplicate_events(self, events: pd.DataFrame) -> pd.DataFrame:
-        """Deduplicate by keeping highest-severity event per category per week."""
+        """Deduplicate by keeping highest-severity event per category per 3-day window.
+
+        Uses 3-day periods instead of weekly to preserve multiple real events
+        in the same category that happen days apart (e.g., tariff announcement
+        Monday, retaliatory response Friday).
+        """
         if events.empty:
             return events
 
         events = events.sort_values("date")
-        events["_week"] = events["date"].dt.isocalendar().week.astype(int)
-        events["_year"] = events["date"].dt.year
+        # 3-day periods from epoch for finer granularity than weekly
+        events["_period"] = (
+            (events["date"] - pd.Timestamp("2015-01-01")).dt.days // 3
+        )
 
         deduped = (
             events.sort_values("severity", ascending=False)
-            .drop_duplicates(subset=["_year", "_week", "category"], keep="first")
-            .drop(columns=["_week", "_year"])
+            .drop_duplicates(subset=["_period", "category"], keep="first")
+            .drop(columns=["_period"])
             .sort_values("date")
             .reset_index(drop=True)
         )

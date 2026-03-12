@@ -42,7 +42,7 @@ threshold = st.sidebar.slider(
     help="Minimum price reversal to trigger a DC event",
 )
 start_date = st.sidebar.date_input("Start Date", pd.Timestamp("2018-01-01"))
-end_date = st.sidebar.date_input("End Date", pd.Timestamp("2025-12-31"))
+end_date = st.sidebar.date_input("End Date", pd.Timestamp.now())
 
 
 @st.cache_data(ttl=3600)

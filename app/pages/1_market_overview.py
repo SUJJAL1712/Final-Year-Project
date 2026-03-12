@@ -34,7 +34,7 @@ def load_events():
 # Sidebar filters
 st.sidebar.header("Filters")
 start_date = st.sidebar.date_input("Start Date", pd.Timestamp("2018-01-01"))
-end_date = st.sidebar.date_input("End Date", pd.Timestamp("2025-12-31"))
+end_date = st.sidebar.date_input("End Date", pd.Timestamp.now())
 min_severity = st.sidebar.slider("Minimum Event Severity", 1, 10, 5)
 
 # Load data

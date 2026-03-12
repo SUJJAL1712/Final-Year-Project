@@ -45,7 +45,7 @@ class DCEventCorrelator:
         market movements detectable by DC.
         """
         summaries = self.detector.detect(prices)
-        dc_df = self.detector.to_dataframe(summaries)
+        dc_df = self.detector.to_dataframe(summaries).copy()
         dc_dates = pd.to_datetime(dc_df["dc_confirm_time"])
         event_dates = [pd.Timestamp(d) for d in event_dates]
 
@@ -86,7 +86,7 @@ class DCEventCorrelator:
         Compare DC event magnitudes near geopolitical events vs. normal periods.
         """
         summaries = self.detector.detect(prices)
-        dc_df = self.detector.to_dataframe(summaries)
+        dc_df = self.detector.to_dataframe(summaries).copy()
         dc_df["dc_confirm_time"] = pd.to_datetime(dc_df["dc_confirm_time"])
         event_timestamps = [pd.Timestamp(d) for d in event_dates]
 
@@ -142,7 +142,7 @@ class DCEventCorrelator:
         while trade deals should trigger more upturn DC events.
         """
         summaries = self.detector.detect(prices)
-        dc_df = self.detector.to_dataframe(summaries)
+        dc_df = self.detector.to_dataframe(summaries).copy()
         dc_df["dc_confirm_time"] = pd.to_datetime(dc_df["dc_confirm_time"])
 
         results = {}

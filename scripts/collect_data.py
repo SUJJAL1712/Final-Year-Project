@@ -17,6 +17,7 @@ Usage:
 
 import os
 import sys
+import time
 import argparse
 from pathlib import Path
 
@@ -80,7 +81,11 @@ def collect_rss_news():
 
 
 def collect_newsapi_news():
-    """Collect news from NewsAPI (requires NEWS_API_KEY)."""
+    """Collect news from NewsAPI only (requires NEWS_API_KEY).
+
+    Uses only the NewsAPI-specific endpoint to avoid re-fetching
+    GDELT/RSS data that build_events() already handles.
+    """
     if not os.getenv("NEWS_API_KEY"):
         logger.info(
             "NEWS_API_KEY not set — skipping NewsAPI collection. "
@@ -88,14 +93,30 @@ def collect_newsapi_news():
         )
         return
 
+    import pandas as pd
+
     logger.info("=== Collecting NewsAPI News ===")
     collector = NewsCollector()
 
-    tariff_news = collector.collect_tariff_news()
-    logger.info(f"NewsAPI tariff news: {len(tariff_news)} articles")
+    queries = [
+        "US China tariff trade war",
+        "India tariff trade policy",
+        "retaliatory tariffs",
+        "military conflict regional war",
+        "Russia Ukraine war impact",
+        "Israel Hamas conflict",
+    ]
 
-    conflict_news = collector.collect_conflict_news()
-    logger.info(f"NewsAPI conflict news: {len(conflict_news)} articles")
+    all_articles = []
+    for query in queries:
+        articles = collector.collect_from_newsapi(query)
+        all_articles.extend(articles)
+        time.sleep(1)
+
+    if all_articles:
+        df = pd.DataFrame(all_articles)
+        df.to_csv(collector.data_dir / "newsapi_articles.csv", index=False)
+        logger.info(f"NewsAPI: collected {len(df)} articles total")
 
 
 def build_events():
@@ -133,6 +154,7 @@ def run_sentiment_analysis():
 
     logger.info("=== Running LLM Sentiment Analysis ===")
 
+    import pandas as pd
     from src.utils.config import DATA_DIR
     from src.llm_pipeline.sentiment_analyzer import FinancialSentimentAnalyzer
 
@@ -140,13 +162,45 @@ def run_sentiment_analysis():
     results_dir.mkdir(exist_ok=True)
     cache_path = results_dir / "daily_sentiment.csv"
 
+    # Check cache staleness (consistent with run_analysis.py)
     if cache_path.exists():
-        logger.info(f"Sentiment cache exists at {cache_path}")
-        return
+        try:
+            cached = pd.read_csv(cache_path, parse_dates=["date"], index_col="date")
+            if not cached.empty:
+                cache_max = cached.index.max()
+                age_days = (pd.Timestamp.now() - cache_max).days
+                if age_days < 90:
+                    logger.info(
+                        f"Sentiment cache fresh ({len(cached)} days, "
+                        f"latest: {cache_max.date()}), skipping"
+                    )
+                    return
+                logger.info(
+                    f"Sentiment cache stale ({age_days} days), refreshing..."
+                )
+        except Exception as e:
+            logger.warning(f"Failed to read sentiment cache: {e}")
 
-    # Load GDELT news
+    # Load GDELT news as primary source
     gdelt = GDELTFetcher()
     news = gdelt.fetch_all_news()
+
+    # Also load any cached NewsAPI/RSS articles for richer coverage
+    news_dir = DATA_DIR / "raw" / "news"
+    for cached_file in ["tariff_news.csv", "conflict_news.csv", "newsapi_articles.csv"]:
+        cached_path = news_dir / cached_file
+        if cached_path.exists():
+            try:
+                extra = pd.read_csv(cached_path, parse_dates=["published_at"])
+                if not extra.empty and "title" in extra.columns:
+                    news = pd.concat([news, extra], ignore_index=True)
+                    logger.info(f"Added {len(extra)} articles from {cached_file}")
+            except Exception as e:
+                logger.warning(f"Failed to load {cached_file}: {e}")
+
+    # Deduplicate across sources
+    if not news.empty:
+        news = news.drop_duplicates(subset=["title"], keep="first")
 
     if news.empty:
         logger.warning("No news for sentiment analysis")

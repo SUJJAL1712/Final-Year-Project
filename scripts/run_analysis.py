@@ -44,6 +44,7 @@ from src.analysis.granger_causality import GrangerCausalityAnalyzer
 from src.models.feature_engineering import FeatureEngineer
 from src.models.hybrid_model import HybridDCLLMPredictor
 from src.models.baselines import BaselineModels
+from src.utils.config import ANALYSIS_START, ANALYSIS_END
 from src.utils.helpers import compute_returns
 
 
@@ -117,12 +118,29 @@ def run_llm_analysis(events_df: pd.DataFrame, skip_llm: bool) -> pd.DataFrame:
                     f"Sentiment cache stale (latest: {cache_max.date()}, "
                     f"{age_days} days old), refreshing..."
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to read sentiment cache: {e}")
 
     # Use GDELT news articles for sentiment analysis
     gdelt = GDELTFetcher()
     news = gdelt.fetch_all_news()
+
+    # Also load any cached NewsAPI/RSS articles for richer coverage
+    news_dir = DATA_DIR / "raw" / "news"
+    for cached_file in ["tariff_news.csv", "conflict_news.csv", "newsapi_articles.csv"]:
+        cached_path = news_dir / cached_file
+        if cached_path.exists():
+            try:
+                extra = pd.read_csv(cached_path, parse_dates=["published_at"])
+                if not extra.empty and "title" in extra.columns:
+                    news = pd.concat([news, extra], ignore_index=True)
+                    logger.info(f"Added {len(extra)} articles from {cached_file}")
+            except Exception as e:
+                logger.warning(f"Failed to load {cached_file}: {e}")
+
+    # Deduplicate across sources
+    if not news.empty:
+        news = news.drop_duplicates(subset=["title"], keep="first")
 
     if news.empty:
         logger.warning("No news articles for sentiment analysis")
@@ -367,7 +385,7 @@ def main():
         logger.info(f"ANALYZING: {market} ({symbol})")
         logger.info(f"{'='*60}")
 
-        df = fetcher.fetch_symbol(symbol, "2015-01-01", "2025-12-31")
+        df = fetcher.fetch_symbol(symbol, ANALYSIS_START, ANALYSIS_END)
         if df.empty:
             logger.warning(f"No data for {market}, skipping")
             continue

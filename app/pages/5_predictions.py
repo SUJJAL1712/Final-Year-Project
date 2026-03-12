@@ -72,7 +72,8 @@ def _load_sentiment_cache() -> pd.DataFrame | None:
 @st.cache_data(ttl=3600)
 def load_and_build_features(sym, threshold, horizon):
     fetcher = StockDataFetcher()
-    df = fetcher.fetch_symbol(sym, "2015-01-01", "2025-12-31")
+    from src.utils.config import ANALYSIS_START, ANALYSIS_END
+    df = fetcher.fetch_symbol(sym, ANALYSIS_START, ANALYSIS_END)
     if df.empty:
         return None, None, None
 

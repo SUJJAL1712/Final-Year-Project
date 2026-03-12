@@ -1,5 +1,6 @@
 """Centralized configuration loader."""
 
+from datetime import datetime
 from pathlib import Path
 from functools import lru_cache
 from typing import Any
@@ -12,6 +13,10 @@ load_dotenv()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_DIR = PROJECT_ROOT / "config"
 DATA_DIR = PROJECT_ROOT / "data"
+
+# Dynamic analysis date range — always extends to today's date
+ANALYSIS_START = "2015-01-01"
+ANALYSIS_END = datetime.now().strftime("%Y-%m-%d")
 
 
 class Config:

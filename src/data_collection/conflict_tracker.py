@@ -16,7 +16,7 @@ import re
 import pandas as pd
 from loguru import logger
 
-from src.utils.config import DATA_DIR
+from src.utils.config import DATA_DIR, ANALYSIS_START, ANALYSIS_END
 from src.data_collection.gdelt_fetcher import GDELTFetcher
 
 
@@ -128,8 +128,8 @@ class ConflictEventTracker:
 
     def get_conflict_events(
         self,
-        start_date: str = "2015-01-01",
-        end_date: str = "2025-12-31",
+        start_date: str | None = None,
+        end_date: str | None = None,
         force_refresh: bool = False,
     ) -> pd.DataFrame:
         """
@@ -141,6 +141,8 @@ class ConflictEventTracker:
         3. Deduplicate into distinct events (weekly grouping)
         4. Cache to disk for fast reload
         """
+        start_date = start_date or ANALYSIS_START
+        end_date = end_date or ANALYSIS_END
         cache_path = self._cache_path_for(start_date, end_date)
 
         if cache_path.exists() and not force_refresh:
@@ -321,18 +323,23 @@ class ConflictEventTracker:
         return sorted(markets)
 
     def _deduplicate_events(self, events: pd.DataFrame) -> pd.DataFrame:
-        """Deduplicate by keeping highest-severity per category per week."""
+        """Deduplicate by keeping highest-severity per category per 3-day window.
+
+        Uses 3-day periods instead of weekly to preserve multiple real events
+        in the same category that occur days apart.
+        """
         if events.empty:
             return events
 
         events = events.sort_values("date")
-        events["_week"] = events["date"].dt.isocalendar().week.astype(int)
-        events["_year"] = events["date"].dt.year
+        events["_period"] = (
+            (events["date"] - pd.Timestamp("2015-01-01")).dt.days // 3
+        )
 
         deduped = (
             events.sort_values("severity", ascending=False)
-            .drop_duplicates(subset=["_year", "_week", "category"], keep="first")
-            .drop(columns=["_week", "_year"])
+            .drop_duplicates(subset=["_period", "category"], keep="first")
+            .drop(columns=["_period"])
             .sort_values("date")
             .reset_index(drop=True)
         )
@@ -363,8 +370,12 @@ class ConflictEventTracker:
             logger.info(f"Loading cached combined events from {cache_path}")
             return pd.read_csv(cache_path, parse_dates=["date"])
 
-        tariff_events = TariffEventTracker().get_tariff_events()
-        conflict_events = self.get_conflict_events()
+        tariff_events = TariffEventTracker().get_tariff_events(
+            force_refresh=force_refresh
+        )
+        conflict_events = self.get_conflict_events(
+            force_refresh=force_refresh
+        )
 
         frames = []
 

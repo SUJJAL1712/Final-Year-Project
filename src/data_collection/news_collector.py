@@ -16,7 +16,7 @@ import feedparser
 import pandas as pd
 from loguru import logger
 
-from src.utils.config import DATA_DIR
+from src.utils.config import DATA_DIR, ANALYSIS_START, ANALYSIS_END
 
 
 class NewsCollector:
@@ -169,8 +169,8 @@ class NewsCollector:
             from src.data_collection.gdelt_fetcher import GDELTFetcher
             gdelt = GDELTFetcher()
             gdelt_news = gdelt.fetch_tariff_news(
-                start_date=from_date or "2015-01-01",
-                end_date=to_date or "2025-12-31",
+                start_date=from_date or ANALYSIS_START,
+                end_date=to_date or ANALYSIS_END,
             )
             if not gdelt_news.empty:
                 for _, row in gdelt_news.iterrows():
@@ -221,7 +221,10 @@ class NewsCollector:
         df = pd.DataFrame(all_articles)
         if not df.empty:
             df["published_at"] = pd.to_datetime(df["published_at"], errors="coerce")
-            df = df.drop_duplicates(subset=["title"]).sort_values("published_at")
+            # Dedup by (title, date) — same headline on different dates are distinct
+            df["_pub_date"] = df["published_at"].dt.date
+            df = df.drop_duplicates(subset=["title", "_pub_date"], keep="first")
+            df = df.drop(columns=["_pub_date"]).sort_values("published_at")
             df.to_csv(self.data_dir / "tariff_news.csv", index=False)
 
         logger.info(f"Total tariff news collected: {len(df)}")
@@ -245,8 +248,8 @@ class NewsCollector:
             from src.data_collection.gdelt_fetcher import GDELTFetcher
             gdelt = GDELTFetcher()
             gdelt_news = gdelt.fetch_conflict_news(
-                start_date=from_date or "2015-01-01",
-                end_date=to_date or "2025-12-31",
+                start_date=from_date or ANALYSIS_START,
+                end_date=to_date or ANALYSIS_END,
             )
             if not gdelt_news.empty:
                 for _, row in gdelt_news.iterrows():
@@ -297,7 +300,10 @@ class NewsCollector:
         df = pd.DataFrame(all_articles)
         if not df.empty:
             df["published_at"] = pd.to_datetime(df["published_at"], errors="coerce")
-            df = df.drop_duplicates(subset=["title"]).sort_values("published_at")
+            # Dedup by (title, date) — same headline on different dates are distinct
+            df["_pub_date"] = df["published_at"].dt.date
+            df = df.drop_duplicates(subset=["title", "_pub_date"], keep="first")
+            df = df.drop(columns=["_pub_date"]).sort_values("published_at")
             df.to_csv(self.data_dir / "conflict_news.csv", index=False)
 
         logger.info(f"Total conflict news collected: {len(df)}")
