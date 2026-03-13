@@ -32,7 +32,13 @@ symbol_map = {
     "India (NIFTY 50)": "^NSEI",
     "China (HSI)": "^HSI",
 }
+market_name_map = {
+    "US (S&P 500)": "US",
+    "India (NIFTY 50)": "India",
+    "China (HSI)": "China",
+}
 symbol = symbol_map[market]
+market_name = market_name_map[market]
 
 
 @st.cache_data(ttl=3600)
@@ -63,13 +69,22 @@ if df.empty:
 
 prices = df["close"]
 
-# Filter events
-if event_type == "Tariff Events":
-    events_df = events_df[events_df["event_type"] == "tariff"]
-elif event_type == "Conflict Events":
-    events_df = events_df[events_df["event_type"] == "conflict"]
+# Filter events by type
+if not events_df.empty and "event_type" in events_df.columns:
+    if event_type == "Tariff Events":
+        events_df = events_df[events_df["event_type"] == "tariff"]
+    elif event_type == "Conflict Events":
+        events_df = events_df[events_df["event_type"] == "conflict"]
 
-event_dates = events_df["date"].astype(str).tolist()
+# Filter events by market
+if not events_df.empty and "markets_affected" in events_df.columns:
+    events_df = events_df[
+        events_df["markets_affected"].apply(
+            lambda x: market_name in str(x)
+        )
+    ].reset_index(drop=True)
+
+event_dates = events_df["date"].astype(str).tolist() if not events_df.empty else []
 
 # Tabs
 tab1, tab2, tab3 = st.tabs(["Event Study", "DC-Event Correlation", "Event Details"])
@@ -95,7 +110,11 @@ with tab1:
             col1.metric("Events Analyzed", acar_result["n_events"])
             acar_val = acar_result["acar"].iloc[-1]
             col2.metric("Total ACAR", f"{acar_val:.4f}")
-            col3.metric("Event Day ACAR", f"{acar_result['acar'].iloc[10]:.4f}" if len(acar_result['acar']) > 10 else "N/A")
+            acar_series = acar_result["acar"]
+            col3.metric(
+                "Event Day ACAR",
+                f"{acar_series.iloc[10]:.4f}" if len(acar_series) > 10 else "N/A",
+            )
 
             # Individual event results
             multi_results = analyzer.multi_event_study(prices, event_dates)
@@ -108,7 +127,7 @@ with tab1:
         else:
             st.warning("Insufficient data for event study.")
     else:
-        st.info("No events to analyze for this selection.")
+        st.info(f"No events to analyze for {market} with current filters.")
 
 with tab2:
     st.subheader("DC-Event Temporal Coincidence")
@@ -147,8 +166,12 @@ with tab2:
 with tab3:
     st.subheader("Event Database")
     if not events_df.empty:
+        display_cols = ["date", "event", "category", "severity", "event_type", "markets_affected"]
+        available_cols = [c for c in display_cols if c in events_df.columns]
         st.dataframe(
-            events_df.sort_values("date", ascending=False),
+            events_df[available_cols].sort_values("date", ascending=False),
             use_container_width=True,
             height=500,
         )
+    else:
+        st.info("No events available for this selection.")

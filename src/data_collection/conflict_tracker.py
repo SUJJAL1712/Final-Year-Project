@@ -1,12 +1,13 @@
 """
-Regional conflict event tracking from real GDELT news data.
+Regional conflict event tracking from real GDELT data.
 
-Fetches actual historical conflict news from the GDELT Project API (free, no key)
-and classifies them into structured events. When an Anthropic API key is
-available, uses Claude for high-quality LLM classification; otherwise falls
-back to keyword-based classification.
+Two data sources merged for full 2015-present coverage:
+1. GDELT Events 2.0 export files — historical backbone, CAMEO-coded events
+   (full coverage from Feb 2015 to present, no API key needed)
+2. GDELT DOC 2.0 API — recent article search (~last 3 months), classified
+   via LLM (if API key available) or keyword matching
 
-NO hardcoded events — all data sourced from real news articles.
+NO hardcoded events — all data sourced from real GDELT data.
 """
 
 import hashlib
@@ -133,13 +134,15 @@ class ConflictEventTracker:
         force_refresh: bool = False,
     ) -> pd.DataFrame:
         """
-        Get classified conflict events from real GDELT news data.
+        Get classified conflict events from real GDELT data.
 
         Pipeline:
-        1. Fetch conflict news from GDELT API (free, no key required)
-        2. Classify via LLM (if API key available) or keyword matching
-        3. Deduplicate into distinct events (weekly grouping)
-        4. Cache to disk for fast reload
+        1. Load historical backbone from GDELT Events 2.0 export files
+           (full coverage from Feb 2015 to present, CAMEO-coded)
+        2. Fetch recent conflict news from GDELT DOC 2.0 API (~last 3 months)
+        3. Classify recent articles via LLM or keyword matching
+        4. Merge historical + recent, deduplicate
+        5. Cache to disk for fast reload
         """
         start_date = start_date or ANALYSIS_START
         end_date = end_date or ANALYSIS_END
@@ -149,33 +152,48 @@ class ConflictEventTracker:
             logger.info(f"Loading cached conflict events from {cache_path}")
             return pd.read_csv(cache_path, parse_dates=["date"])
 
-        # Step 1: Fetch from GDELT
-        logger.info("Fetching conflict news from GDELT...")
+        frames = []
+
+        # Step 1: Historical backbone from GDELT Events 2.0 export files
+        try:
+            from src.data_collection.gdelt_historical import GDELTHistoricalFetcher
+            historical = GDELTHistoricalFetcher()
+            hist_events = historical.fetch_conflict_events(start_date, end_date)
+            if not hist_events.empty:
+                logger.info(f"Historical backbone: {len(hist_events)} conflict events")
+                frames.append(hist_events)
+        except Exception as e:
+            logger.warning(f"Historical fetch failed (will use DOC 2.0 only): {e}")
+
+        # Step 2: Recent articles from GDELT DOC 2.0 API
+        logger.info("Fetching recent conflict news from GDELT DOC 2.0 API...")
         raw_news = self.gdelt.fetch_conflict_news(start_date, end_date)
 
-        if raw_news.empty:
-            logger.warning("No conflict news from GDELT")
+        if not raw_news.empty:
+            logger.info(f"GDELT DOC 2.0 returned {len(raw_news)} conflict articles")
+
+            # Step 3: Classify recent articles
+            if os.getenv("ANTHROPIC_API_KEY"):
+                logger.info("Using LLM classification (Claude API)...")
+                recent = self._classify_with_llm(raw_news)
+            else:
+                logger.info("No ANTHROPIC_API_KEY — using keyword classification...")
+                recent = self._classify_with_keywords(raw_news)
+
+            if not recent.empty:
+                recent["event_type"] = "conflict"
+                frames.append(recent)
+
+        if not frames:
+            logger.warning("No conflict events from any source")
             return pd.DataFrame()
 
-        logger.info(f"GDELT returned {len(raw_news)} conflict articles")
-
-        # Step 2: Classify
-        if os.getenv("ANTHROPIC_API_KEY"):
-            logger.info("Using LLM classification (Claude API)...")
-            events = self._classify_with_llm(raw_news)
-        else:
-            logger.info("No ANTHROPIC_API_KEY — using keyword classification...")
-            events = self._classify_with_keywords(raw_news)
-
-        if events.empty:
-            logger.warning("No events after classification")
-            return pd.DataFrame()
-
-        # Step 3: Deduplicate
+        # Step 4: Merge and deduplicate
+        events = pd.concat(frames, ignore_index=True)
         events = self._deduplicate_events(events)
         events["event_type"] = "conflict"
 
-        # Step 4: Cache
+        # Step 5: Cache
         events.to_csv(cache_path, index=False)
         logger.info(f"Saved {len(events)} conflict events to cache")
 

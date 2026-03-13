@@ -43,6 +43,13 @@ with st.spinner("Loading cross-market data..."):
         st.error(f"Error: {e}")
         st.stop()
 
+# Build display_prices dict (one index per market)
+display_prices = {}
+for key, p in prices.items():
+    market = key.split("_")[0] if "_" in key else key
+    if market not in display_prices:
+        display_prices[market] = p
+
 tab1, tab2, tab3 = st.tabs([
     "Cross-Market Comparison",
     "Granger Causality",
@@ -52,12 +59,6 @@ tab1, tab2, tab3 = st.tabs([
 with tab1:
     st.subheader("Normalized Market Comparison")
     viz = CrossMarketVisualizer()
-
-    display_prices = {}
-    for key, p in prices.items():
-        market = key.split("_")[0]
-        if market not in display_prices:
-            display_prices[market] = p
 
     if display_prices:
         fig = viz.plot_normalized_comparison(display_prices)
@@ -111,11 +112,17 @@ with tab3:
     bilateral tariff events.
     """)
 
-    # Get US-China bilateral events
-    us_china_events = tariff_events[
-        (tariff_events["source_country"].isin(["US", "China"]))
-        & (tariff_events["target_country"].isin(["US", "China"]))
-    ]
+    # Get US-China bilateral events (guard column existence)
+    us_china_events = pd.DataFrame()
+    if (
+        not tariff_events.empty
+        and "source_country" in tariff_events.columns
+        and "target_country" in tariff_events.columns
+    ):
+        us_china_events = tariff_events[
+            (tariff_events["source_country"].isin(["US", "China"]))
+            & (tariff_events["target_country"].isin(["US", "China"]))
+        ]
 
     if not us_china_events.empty and len(display_prices) >= 3:
         analyzer = CrossMarketContagionAnalyzer()
@@ -152,5 +159,9 @@ with tab3:
                 viz = CrossMarketVisualizer()
                 fig = viz.plot_india_trade_diversion(result)
                 st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning(f"Analysis error: {result['error']}")
+        else:
+            st.info("Need price data for all 3 markets (US, India, China).")
     else:
-        st.info("Need US-China bilateral events and price data for all 3 markets.")
+        st.info("Need US-China bilateral tariff events and price data for all 3 markets.")

@@ -44,17 +44,35 @@ def main():
     | **Cross-Market** | Contagion analysis and India trade diversion |
     | **Predictions** | Hybrid DC-LLM model results and ablation study |
 
+    **Data Sources:**
+    - Stock prices from **Yahoo Finance** (full 2015-present)
+    - Historical events from **GDELT Events 2.0** export files (CAMEO-coded, Feb 2015-present)
+    - Recent news from **GDELT DOC 2.0 API** (~last 3 months)
+    - RSS feeds and NewsAPI for real-time coverage
+
     **Navigate using the sidebar pages.**
     """)
 
-    # Quick stats
+    # Quick stats — load actual event count
+    event_count = "N/A"
+    try:
+        from src.data_collection.conflict_tracker import ConflictEventTracker
+        events = ConflictEventTracker().get_combined_geopolitical_events()
+        event_count = str(len(events))
+    except Exception:
+        pass
+
+    from src.utils.config import ANALYSIS_START, ANALYSIS_END
+    start_year = ANALYSIS_START[:4]
+    end_year = ANALYSIS_END[:4]
+
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("Markets Analyzed", "3", "US, India, China")
     with col2:
-        st.metric("Time Period", "2015-2025", "10 years")
+        st.metric("Time Period", f"{start_year}-{end_year}", f"{int(end_year) - int(start_year)} years")
     with col3:
-        st.metric("Geopolitical Events", "40+", "Tariffs + Conflicts")
+        st.metric("Geopolitical Events", event_count, "Tariffs + Conflicts")
 
 
 if __name__ == "__main__":

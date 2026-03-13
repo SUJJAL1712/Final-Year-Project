@@ -212,7 +212,8 @@ with tab3:
 
             # Prediction timeline
             st.subheader("Prediction Results Over Time")
+            n_show = min(50, len(predictions))
             st.dataframe(
-                predictions.tail(50),
+                predictions.tail(n_show),
                 use_container_width=True,
             )

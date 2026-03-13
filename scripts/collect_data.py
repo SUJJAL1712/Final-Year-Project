@@ -3,16 +3,18 @@ Data collection pipeline script.
 
 Fetches all required data from real online sources:
 1. Stock prices from Yahoo Finance (via yfinance)
-2. Geopolitical news from GDELT Project API (free, no key)
-3. RSS feeds from major news outlets
-4. Classifies events via LLM (if API key available) or keywords
+2. Historical events from GDELT Events 2.0 export files (2015-present)
+3. Recent geopolitical news from GDELT DOC 2.0 API (free, no key)
+4. RSS feeds from major news outlets
+5. Classifies events via LLM (if API key available) or keywords
 
 Usage:
     python scripts/collect_data.py --all
     python scripts/collect_data.py --stocks
+    python scripts/collect_data.py --historical   (download GDELT Events 2.0 files)
     python scripts/collect_data.py --news
     python scripts/collect_data.py --events
-    python scripts/collect_data.py --sentiment  (requires ANTHROPIC_API_KEY)
+    python scripts/collect_data.py --sentiment    (requires ANTHROPIC_API_KEY)
 """
 
 import os
@@ -30,6 +32,25 @@ from src.data_collection.news_collector import NewsCollector
 from src.data_collection.tariff_tracker import TariffEventTracker
 from src.data_collection.conflict_tracker import ConflictEventTracker
 from src.data_collection.gdelt_fetcher import GDELTFetcher
+
+
+def collect_historical_events():
+    """Download GDELT Events 2.0 export files for full 2015-present coverage.
+
+    This is the historical backbone — CAMEO-coded events with actor countries,
+    GoldsteinScale severity, and tone. Downloads ~4,000 files (one per day)
+    on first run, then only new days on subsequent runs.
+    """
+    logger.info("=== Collecting Historical Events (GDELT Events 2.0) ===")
+    from src.data_collection.gdelt_historical import GDELTHistoricalFetcher
+
+    fetcher = GDELTHistoricalFetcher()
+
+    tariff_events = fetcher.fetch_tariff_events()
+    logger.info(f"Historical tariff events: {len(tariff_events)}")
+
+    conflict_events = fetcher.fetch_conflict_events()
+    logger.info(f"Historical conflict events: {len(conflict_events)}")
 
 
 def collect_stocks():
@@ -254,6 +275,11 @@ def main():
         "--stocks", action="store_true", help="Collect stock data only"
     )
     parser.add_argument(
+        "--historical",
+        action="store_true",
+        help="Download GDELT Events 2.0 files (full 2015-present)",
+    )
+    parser.add_argument(
         "--news", action="store_true", help="Collect news data (GDELT + RSS)"
     )
     parser.add_argument(
@@ -268,21 +294,24 @@ def main():
 
     setup_logger("INFO")
 
-    if args.all or not any([args.stocks, args.news, args.events, args.sentiment]):
-        # Full pipeline: build_events() fetches from GDELT internally
-        # and classifies events. No need to call collect_gdelt_news()
-        # separately — GDELT results are cached per-query, so subsequent
-        # calls won't re-hit the API, but we avoid redundant processing.
+    if args.all or not any([
+        args.stocks, args.historical, args.news, args.events, args.sentiment
+    ]):
+        # Full pipeline: historical events first, then build_events() merges
+        # historical backbone with recent DOC 2.0 articles.
         collect_stocks()
+        collect_historical_events()
         build_events()
         collect_rss_news()
         collect_newsapi_news()
         run_sentiment_analysis()
     else:
-        if args.events:
-            build_events()
         if args.stocks:
             collect_stocks()
+        if args.historical:
+            collect_historical_events()
+        if args.events:
+            build_events()
         if args.news:
             collect_gdelt_news()
             collect_rss_news()
