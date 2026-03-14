@@ -51,3 +51,35 @@ def align_timeseries(*series: pd.Series) -> list[pd.Series]:
 def chunk_list(lst: list, chunk_size: int) -> list[list]:
     """Split a list into chunks of given size."""
     return [lst[i : i + chunk_size] for i in range(0, len(lst), chunk_size)]
+
+
+def adjust_pvalues(
+    p_values: list[float] | np.ndarray,
+    method: str = "fdr_bh",
+    alpha: float = 0.05,
+) -> np.ndarray:
+    """Apply multiple hypothesis correction to a list of p-values.
+
+    Args:
+        p_values: Raw p-values from multiple tests.
+        method: Correction method — 'fdr_bh' (Benjamini-Hochberg, default),
+                'bonferroni', 'holm', 'fdr_by', etc.
+        alpha: Family-wise error rate.
+
+    Returns:
+        Array of adjusted p-values (same length as input).
+    """
+    from statsmodels.stats.multitest import multipletests
+
+    p_arr = np.asarray(p_values, dtype=float)
+    # Handle edge cases (NaN, empty)
+    if len(p_arr) == 0:
+        return p_arr
+    valid = ~np.isnan(p_arr)
+    if valid.sum() == 0:
+        return p_arr
+
+    adjusted = np.full_like(p_arr, np.nan)
+    _, adj, _, _ = multipletests(p_arr[valid], alpha=alpha, method=method)
+    adjusted[valid] = adj
+    return adjusted

@@ -15,7 +15,7 @@ from scipy import stats
 from loguru import logger
 
 from src.utils.config import get_config
-from src.utils.helpers import compute_returns
+from src.utils.helpers import compute_returns, adjust_pvalues
 
 
 class EventStudyAnalyzer:
@@ -224,11 +224,170 @@ class EventStudyAnalyzer:
         t_stat = acar / acar_std
         p_values = 2 * (1 - stats.t.cdf(abs(t_stat), df=len(all_cars) - 1))
 
+        # CI on final ACAR value
+        final_acar = float(acar.iloc[-1])
+        final_acar_se = float(acar_std.iloc[-1])
+        n_events = len(all_cars)
+        ci_half = stats.t.ppf(0.975, df=n_events - 1) * final_acar_se
+        acar_ci_lower = final_acar - ci_half
+        acar_ci_upper = final_acar + ci_half
+
         return {
             "acar": acar,
             "acar_std": acar_std,
             "t_statistics": t_stat,
             "p_values": p_values,
-            "n_events": len(all_cars),
+            "n_events": n_events,
             "car_matrix": car_matrix,
+            "acar_ci_lower": acar_ci_lower,
+            "acar_ci_upper": acar_ci_upper,
         }
+
+    # ------------------------------------------------------------------
+    # Research-grade extensions
+    # ------------------------------------------------------------------
+
+    def multi_event_study_extended(
+        self,
+        prices: pd.Series,
+        event_dates: list[str],
+        market_returns: pd.Series | None = None,
+    ) -> pd.DataFrame:
+        """Like multi_event_study but adds BH-corrected p-values and Cohen's d."""
+        results = []
+
+        for date in event_dates:
+            result = self.single_event_study(prices, date, market_returns)
+            if "error" not in result:
+                # Cohen's d: effect size = CAR / estimation_std
+                est_std = result.get("estimation_std", 0)
+                cohens_d = (
+                    result["total_car"] / est_std if est_std > 0 else 0.0
+                )
+                results.append({
+                    "event_date": result["event_date"],
+                    "event_day_ar": result["event_day_ar"],
+                    "total_car": result["total_car"],
+                    "pre_event_car": result["pre_event_car"],
+                    "post_event_car": result["post_event_car"],
+                    "t_statistic": result["t_statistic"],
+                    "p_value": result["p_value"],
+                    "significant": result["significant"],
+                    "cohens_d": cohens_d,
+                })
+
+        df = pd.DataFrame(results)
+        if not df.empty and len(df) > 1:
+            df["p_value_adjusted"] = adjust_pvalues(df["p_value"].values)
+            df["significant_adjusted"] = df["p_value_adjusted"] < self.significance_level
+            logger.info(
+                f"Event study (extended): {df['significant'].sum()}/{len(df)} raw significant, "
+                f"{df['significant_adjusted'].sum()}/{len(df)} after BH correction"
+            )
+        return df
+
+    def placebo_test(
+        self,
+        prices: pd.Series,
+        event_dates: list[str],
+        n_placebos: int = 500,
+        seed: int = 42,
+    ) -> dict:
+        """Placebo test: run event study on random non-event dates.
+
+        If the real ACAR is outside the placebo distribution, the event
+        effect is unlikely to be spurious.
+
+        Returns:
+            Dict with placebo_cars (distribution), real_acar, empirical_p_value.
+        """
+        returns = compute_returns(prices, method="simple")
+        rng = np.random.RandomState(seed)
+
+        # Real ACAR
+        real = self.average_car(prices, event_dates)
+        if "error" in real:
+            return {"error": "no_valid_events"}
+        real_acar = float(real["acar"].iloc[-1])
+
+        # Build exclusion set: real event dates ± 20 days
+        event_ts = pd.to_datetime(event_dates)
+        exclude = set()
+        for d in event_ts:
+            for offset in range(-20, 21):
+                exclude.add(d + pd.Timedelta(days=offset))
+
+        # Available dates for placebo
+        available = [d for d in returns.index if d not in exclude]
+        if len(available) < n_placebos:
+            n_placebos = len(available)
+
+        # Run placebo event studies
+        placebo_cars = []
+        n_events_per_placebo = min(len(event_dates), 50)  # cap for speed
+
+        for _ in range(n_placebos):
+            placebo_dates = rng.choice(available, size=n_events_per_placebo, replace=False)
+            placebo_dates = [str(d.date()) for d in placebo_dates]
+            result = self.average_car(prices, placebo_dates)
+            if "error" not in result:
+                placebo_cars.append(float(result["acar"].iloc[-1]))
+
+        if not placebo_cars:
+            return {"error": "no_valid_placebos"}
+
+        placebo_arr = np.array(placebo_cars)
+        # Empirical p-value: fraction of placebos with |ACAR| >= |real|
+        empirical_p = float(np.mean(np.abs(placebo_arr) >= abs(real_acar)))
+
+        logger.info(
+            f"Placebo test: real ACAR={real_acar:.6f}, "
+            f"placebo mean={np.mean(placebo_arr):.6f}, "
+            f"empirical p={empirical_p:.4f}"
+        )
+
+        return {
+            "real_acar": real_acar,
+            "placebo_mean": float(np.mean(placebo_arr)),
+            "placebo_std": float(np.std(placebo_arr)),
+            "placebo_5th": float(np.percentile(placebo_arr, 5)),
+            "placebo_95th": float(np.percentile(placebo_arr, 95)),
+            "empirical_p_value": empirical_p,
+            "n_placebos": len(placebo_cars),
+            "n_events_per_placebo": n_events_per_placebo,
+        }
+
+    def window_sensitivity(
+        self,
+        prices: pd.Series,
+        event_dates: list[str],
+        post_windows: list[int] | None = None,
+        market_returns: pd.Series | None = None,
+    ) -> pd.DataFrame:
+        """Test ACAR sensitivity to event window size.
+
+        Runs average_car at different post-event windows and collects
+        the final ACAR value + CI + p-value for each.
+        """
+        post_windows = post_windows or [5, 10, 15, 20, 30]
+        original_post = self.post_window
+        results = []
+
+        for pw in post_windows:
+            self.post_window = pw
+            acar_result = self.average_car(prices, event_dates, market_returns)
+            if "error" not in acar_result:
+                final_acar = float(acar_result["acar"].iloc[-1])
+                results.append({
+                    "post_window": pw,
+                    "acar": final_acar,
+                    "acar_ci_lower": acar_result.get("acar_ci_lower", np.nan),
+                    "acar_ci_upper": acar_result.get("acar_ci_upper", np.nan),
+                    "n_events": acar_result["n_events"],
+                })
+
+        self.post_window = original_post  # restore
+        df = pd.DataFrame(results)
+        if not df.empty:
+            logger.info(f"Window sensitivity:\n{df.to_string()}")
+        return df

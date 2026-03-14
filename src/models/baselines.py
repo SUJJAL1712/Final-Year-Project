@@ -84,6 +84,40 @@ class BaselineModels:
             "mean_f1": f1_score(y, preds, average="weighted", zero_division=0),
         }
 
+    @staticmethod
+    def persistence_baseline(labels: pd.Series) -> dict:
+        """Persistence baseline: predict yesterday's direction."""
+        preds = labels.shift(1).dropna()
+        y = labels.loc[preds.index]
+        return {
+            "model": "persistence",
+            "mean_accuracy": accuracy_score(y, preds),
+            "mean_f1": f1_score(y, preds, average="weighted", zero_division=0),
+        }
+
+    @staticmethod
+    def buy_and_hold_baseline(labels: pd.Series) -> dict:
+        """Buy-and-hold baseline: always predict +1 (up)."""
+        preds = pd.Series(1, index=labels.index)
+        return {
+            "model": "buy_and_hold",
+            "mean_accuracy": accuracy_score(labels, preds),
+            "mean_f1": f1_score(labels, preds, average="weighted", zero_division=0),
+        }
+
+    @staticmethod
+    def bootstrap_ci(
+        labels: pd.Series, preds: pd.Series, n_boot: int = 1000, seed: int = 42
+    ) -> tuple[float, float]:
+        """Bootstrap 95% CI on accuracy."""
+        rng = np.random.RandomState(seed)
+        accs = []
+        n = len(labels)
+        for _ in range(n_boot):
+            idx = rng.randint(0, n, size=n)
+            accs.append(accuracy_score(labels.iloc[idx], preds.iloc[idx]))
+        return (float(np.percentile(accs, 2.5)), float(np.percentile(accs, 97.5)))
+
     def run_all_baselines(
         self, prices: pd.Series, labels: pd.Series
     ) -> pd.DataFrame:
@@ -96,6 +130,8 @@ class BaselineModels:
             self.momentum_baseline(returns, labels, 5),
             self.momentum_baseline(returns, labels, 20),
             self.mean_reversion_baseline(returns, labels, 5),
+            self.persistence_baseline(labels),
+            self.buy_and_hold_baseline(labels),
         ]
 
         df = pd.DataFrame(results)

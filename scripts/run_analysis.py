@@ -24,6 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import numpy as np
 import pandas as pd
 from loguru import logger
 
@@ -380,6 +381,231 @@ def run_model_training(
     return ablation, comparison
 
 
+# ======================================================================
+# Research-grade extensions (additive — called after existing analyses)
+# ======================================================================
+
+
+def run_extended_event_study(
+    prices: pd.Series, events_df: pd.DataFrame, market_name: str
+):
+    """Extended event study: BH correction, Cohen's d, placebo test, window sensitivity."""
+    logger.info(f"=== Extended Event Study: {market_name} ===")
+
+    analyzer = EventStudyAnalyzer()
+    event_dates = events_df["date"].astype(str).tolist()
+
+    if not event_dates:
+        logger.warning(f"No events for {market_name}, skipping extended event study")
+        return
+
+    # BH-corrected multi-event study with effect sizes
+    extended = analyzer.multi_event_study_extended(prices, event_dates)
+    if not extended.empty:
+        extended.to_csv(
+            RESULTS_DIR / f"event_study_extended_{market_name}.csv", index=False
+        )
+
+    # Placebo test
+    placebo = analyzer.placebo_test(prices, event_dates, n_placebos=500)
+    if "error" not in placebo:
+        pd.DataFrame([placebo]).to_csv(
+            RESULTS_DIR / f"placebo_test_{market_name}.csv", index=False
+        )
+
+    # Window sensitivity
+    window_sens = analyzer.window_sensitivity(prices, event_dates)
+    if not window_sens.empty:
+        window_sens.to_csv(
+            RESULTS_DIR / f"event_window_sensitivity_{market_name}.csv", index=False
+        )
+
+
+def run_extended_model_training(
+    prices: pd.Series,
+    events_df: pd.DataFrame,
+    market_name: str,
+    sentiment_df: pd.DataFrame | None = None,
+):
+    """Extended model training: CIs, ablation, DM test, temporal holdout,
+    rolling eval, calibration, learning curves."""
+    logger.info(f"=== Extended Model Training: {market_name} ===")
+
+    from src.models.feature_engineering import FeatureEngineer
+
+    market_id = market_name.lower()
+    engineer = FeatureEngineer(dc_threshold=0.02)
+    features = engineer.build_unified_features(
+        prices,
+        events_df=events_df,
+        sentiment_df=sentiment_df,
+        market_id=market_id,
+    )
+    labels = engineer.build_labels(prices, horizon=5, method="direction")
+
+    model = HybridDCLLMPredictor()
+
+    # Extended ablation with CIs
+    ablation_ext = model.run_ablation_study_extended(features, labels, "xgboost")
+    ablation_ext.to_csv(
+        RESULTS_DIR / f"ablation_extended_{market_name}.csv", index=False
+    )
+
+    # Extended model comparison with DM test
+    comparison_ext = model.model_comparison_extended(features, labels)
+    comparison_ext.to_csv(
+        RESULTS_DIR / f"model_comparison_extended_{market_name}.csv", index=False
+    )
+
+    # Temporal holdout (train ≤ 2022, test 2023+)
+    holdout = model.temporal_holdout_evaluation(features, labels)
+    pd.DataFrame([{k: v for k, v in holdout.items() if k != "classification_report"}]).to_csv(
+        RESULTS_DIR / f"temporal_holdout_{market_name}.csv", index=False
+    )
+
+    # Rolling window evaluation
+    rolling = model.rolling_evaluation(features, labels)
+    if not rolling.empty:
+        rolling.to_csv(
+            RESULTS_DIR / f"rolling_eval_{market_name}.csv", index=False
+        )
+
+    # Calibration analysis
+    cal = model.calibration_analysis(features, labels)
+    if "error" not in cal:
+        pd.DataFrame([{"ece": cal["ece"], "n_test": cal["n_test"]}]).to_csv(
+            RESULTS_DIR / f"calibration_{market_name}.csv", index=False
+        )
+
+    # Learning curves
+    lc = model.learning_curves(features, labels)
+    if not lc.empty:
+        lc.to_csv(
+            RESULTS_DIR / f"learning_curves_{market_name}.csv", index=False
+        )
+
+
+def run_dc_sensitivity(
+    prices: pd.Series,
+    events_df: pd.DataFrame,
+    market_name: str,
+    sentiment_df: pd.DataFrame | None = None,
+):
+    """Test DC features at multiple thresholds to show robustness."""
+    logger.info(f"=== DC Threshold Sensitivity: {market_name} ===")
+
+    from src.models.feature_engineering import FeatureEngineer
+
+    market_id = market_name.lower()
+    results = []
+
+    for theta in [0.01, 0.02, 0.05]:
+        engineer = FeatureEngineer(dc_threshold=theta)
+        features = engineer.build_unified_features(
+            prices,
+            events_df=events_df,
+            sentiment_df=sentiment_df,
+            market_id=market_id,
+        )
+        labels = engineer.build_labels(prices, horizon=5, method="direction")
+
+        model = HybridDCLLMPredictor()
+        model.define_feature_groups(features)
+        dc_cols = model.feature_groups.get("dc_only", [])
+        valid_cols = [c for c in dc_cols if c in features.columns]
+
+        if not valid_cols:
+            continue
+
+        result = model.train_and_evaluate_extended(features, labels, valid_cols, "xgboost")
+        if "error" not in result:
+            results.append({
+                "theta": theta,
+                "n_features": result["n_features"],
+                "mean_accuracy": result["mean_accuracy"],
+                "ci_lower": result["ci_lower_accuracy"],
+                "ci_upper": result["ci_upper_accuracy"],
+                "mean_f1": result["mean_f1"],
+            })
+
+    df = pd.DataFrame(results)
+    if not df.empty:
+        df.to_csv(RESULTS_DIR / f"dc_sensitivity_{market_name}.csv", index=False)
+        logger.info(f"DC sensitivity:\n{df.to_string()}")
+
+
+def run_regime_analysis(
+    prices: pd.Series,
+    events_df: pd.DataFrame,
+    market_name: str,
+    sentiment_df: pd.DataFrame | None = None,
+):
+    """Subsample analysis: pre-COVID vs post-COVID, tariff vs conflict."""
+    logger.info(f"=== Regime Analysis: {market_name} ===")
+
+    from src.models.feature_engineering import FeatureEngineer
+
+    market_id = market_name.lower()
+    engineer = FeatureEngineer(dc_threshold=0.02)
+    features = engineer.build_unified_features(
+        prices,
+        events_df=events_df,
+        sentiment_df=sentiment_df,
+        market_id=market_id,
+    )
+    labels = engineer.build_labels(prices, horizon=5, method="direction")
+
+    results = []
+    cutoff = pd.Timestamp("2020-01-01")
+
+    for regime_name, mask in [
+        ("pre_covid", features.index <= cutoff),
+        ("post_covid", features.index > cutoff),
+        ("full_period", pd.Series(True, index=features.index)),
+    ]:
+        feat_sub = features[mask]
+        lab_sub = labels.loc[feat_sub.index.intersection(labels.index)]
+
+        if len(feat_sub) < 100:
+            continue
+
+        model = HybridDCLLMPredictor()
+        result = model.train_and_evaluate_extended(feat_sub, lab_sub, model_name="xgboost")
+        if "error" not in result:
+            results.append({
+                "regime": regime_name,
+                "n_samples": len(feat_sub),
+                "mean_accuracy": result["mean_accuracy"],
+                "ci_lower": result["ci_lower_accuracy"],
+                "ci_upper": result["ci_upper_accuracy"],
+                "mean_f1": result["mean_f1"],
+            })
+
+    # Also split event study by event type
+    if not events_df.empty and "event_type" in events_df.columns:
+        analyzer = EventStudyAnalyzer()
+        for etype in ["tariff", "conflict"]:
+            sub_events = events_df[events_df["event_type"] == etype]
+            if len(sub_events) < 5:
+                continue
+            event_dates = sub_events["date"].astype(str).tolist()
+            acar = analyzer.average_car(prices, event_dates)
+            if "error" not in acar:
+                results.append({
+                    "regime": f"event_type_{etype}",
+                    "n_samples": acar["n_events"],
+                    "mean_accuracy": float(acar["acar"].iloc[-1]),  # ACAR as metric
+                    "ci_lower": acar.get("acar_ci_lower", np.nan),
+                    "ci_upper": acar.get("acar_ci_upper", np.nan),
+                    "mean_f1": np.nan,
+                })
+
+    df = pd.DataFrame(results)
+    if not df.empty:
+        df.to_csv(RESULTS_DIR / f"regime_analysis_{market_name}.csv", index=False)
+        logger.info(f"Regime analysis:\n{df.to_string()}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run Full Analysis Pipeline")
     parser.add_argument(
@@ -447,6 +673,13 @@ def main():
             sentiment_df=sentiment_df if not sentiment_df.empty else None,
         )
 
+        # Research-grade extensions
+        sent = sentiment_df if not sentiment_df.empty else None
+        run_extended_event_study(prices, market_events, market)
+        run_extended_model_training(prices, market_events, market, sentiment_df=sent)
+        run_dc_sensitivity(prices, market_events, market, sentiment_df=sent)
+        run_regime_analysis(prices, market_events, market, sentiment_df=sent)
+
     # Cross-market analysis (requires all 3 markets)
     if args.market == "all" and len(all_prices) >= 2:
         logger.info("\n=== Cross-Market Analysis ===")
@@ -464,6 +697,13 @@ def main():
             RESULTS_DIR / "granger_causality.csv", index=False
         )
         logger.info(f"Granger causality:\n{gc_results}")
+
+        # Extended Granger: AIC lag selection + BH correction
+        gc_ext = gc.cross_market_granger_extended(returns)
+        gc_ext.to_csv(
+            RESULTS_DIR / "granger_causality_extended.csv", index=False
+        )
+        logger.info(f"Granger (AIC + BH):\n{gc_ext}")
 
         # Cross-market contagion
         run_cross_market_contagion(all_prices, events)
