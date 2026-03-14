@@ -115,22 +115,70 @@ class ClaudeClient:
         The prompt should instruct Claude to respond in JSON format.
         """
         response = self.query(prompt, system, temperature)
+        parsed = self._parse_json_response(response)
+        if parsed is not None:
+            return parsed
 
-        # Extract JSON from response (handle markdown code blocks)
-        text = response.strip()
-        if text.startswith("```json"):
-            text = text[7:]
-        if text.startswith("```"):
-            text = text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
+        # One strict retry with an explicit JSON-only suffix.
+        # This is a real recovery attempt (not suppression): we ask the model
+        # to regenerate strictly valid JSON when the first response is malformed.
+        logger.warning("Initial JSON parse failed, retrying with strict JSON instruction")
+        strict_prompt = (
+            f"{prompt}\n\n"
+            "IMPORTANT: Return ONLY valid JSON. "
+            "No markdown, no code fences, no explanation text."
+        )
+        retry_temp = 0.0 if temperature is None else temperature
+        retry_response = self.query(strict_prompt, system, retry_temp)
+        parsed_retry = self._parse_json_response(retry_response)
+        if parsed_retry is not None:
+            logger.info("Recovered valid JSON on retry")
+            return parsed_retry
 
+        logger.warning("Failed to parse JSON response after retry")
+        logger.debug(f"Raw response (first try): {response[:500]}")
+        logger.debug(f"Raw response (retry): {retry_response[:500]}")
+        return {
+            "error": "json_parse_failed",
+            "raw_response": response,
+            "retry_raw_response": retry_response,
+        }
+
+    def _parse_json_response(self, response: str) -> dict | list | None:
+        """Parse JSON from raw model output, tolerating wrapper noise."""
+        text = self._strip_markdown_fences(response.strip())
+
+        # Fast path: whole payload is JSON.
         try:
-            return json.loads(text.strip())
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse JSON response: {e}")
-            logger.debug(f"Raw response: {response[:500]}")
-            return {"error": "json_parse_failed", "raw_response": response}
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # Recovery path: find the first valid JSON object/array in the text.
+        decoder = json.JSONDecoder()
+        for i, ch in enumerate(text):
+            if ch not in "{[":
+                continue
+            try:
+                obj, _ = decoder.raw_decode(text[i:])
+                return obj
+            except json.JSONDecodeError:
+                continue
+
+        return None
+
+    @staticmethod
+    def _strip_markdown_fences(text: str) -> str:
+        """Remove optional markdown code fences around a JSON payload."""
+        if not text.startswith("```"):
+            return text
+
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
 
     def batch_query(
         self,

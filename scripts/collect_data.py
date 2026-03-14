@@ -3,15 +3,15 @@ Data collection pipeline script.
 
 Fetches all required data from real online sources:
 1. Stock prices from Yahoo Finance (via yfinance)
-2. Historical events from GDELT Events 2.0 export files (2015-present)
-3. Recent geopolitical news from GDELT DOC 2.0 API (free, no key)
+2. Historical events from GDELT daily aggregate export files (2013-present)
+3. Recent geopolitical news from GDELT DOC 2.0 API (~last 3 months only)
 4. RSS feeds from major news outlets
 5. Classifies events via LLM (if API key available) or keywords
 
 Usage:
     python scripts/collect_data.py --all
     python scripts/collect_data.py --stocks
-    python scripts/collect_data.py --historical   (download GDELT Events 2.0 files)
+    python scripts/collect_data.py --historical   (download GDELT daily files)
     python scripts/collect_data.py --news
     python scripts/collect_data.py --events
     python scripts/collect_data.py --sentiment    (requires ANTHROPIC_API_KEY)
@@ -35,13 +35,14 @@ from src.data_collection.gdelt_fetcher import GDELTFetcher
 
 
 def collect_historical_events():
-    """Download GDELT Events 2.0 export files for full 2015-present coverage.
+    """Download GDELT daily aggregate files for full historical coverage.
 
     This is the historical backbone — CAMEO-coded events with actor countries,
-    GoldsteinScale severity, and tone. Downloads ~4,000 files (one per day)
-    on first run, then only new days on subsequent runs.
+    GoldsteinScale severity, and tone. Each daily file contains ALL events
+    coded on that day (not a sample). Downloads ~4,000+ files (one per day
+    from 2013/2015 to present) on first run, then only new days on subsequent runs.
     """
-    logger.info("=== Collecting Historical Events (GDELT Events 2.0) ===")
+    logger.info("=== Collecting Historical Events (GDELT daily files) ===")
     from src.data_collection.gdelt_historical import GDELTHistoricalFetcher
 
     fetcher = GDELTHistoricalFetcher()
@@ -217,9 +218,37 @@ def run_sentiment_analysis():
         except Exception as e:
             logger.warning(f"Failed to read sentiment cache: {e}")
 
-    # Load GDELT news as primary source
-    gdelt = GDELTFetcher()
-    news = gdelt.fetch_all_news()
+    # Use historical GDELT events (108K+ spanning 2013-present) instead of
+    # the DOC 2.0 API which only covers ~3 months and is rate-limited.
+    # Load already-cached tariff + conflict events from --historical/--events.
+    from src.data_collection.gdelt_historical import GDELTHistoricalFetcher
+
+    hist = GDELTHistoricalFetcher()
+    tariff_hist = hist.fetch_tariff_events()
+    conflict_hist = hist.fetch_conflict_events()
+    frames = [df for df in [tariff_hist, conflict_hist] if not df.empty]
+
+    if frames:
+        all_hist = pd.concat(frames, ignore_index=True)
+        news = pd.DataFrame({
+            "title": all_hist["event"],
+            "published_at": all_hist["date"],
+            "source": "gdelt_historical",
+        })
+        logger.info(f"Loaded {len(news)} historical events")
+        # Sample to control API cost: keep up to 25 highest-severity events
+        # per day (total, not per country). With Haiku this costs ~$2.50.
+        if "severity" in all_hist.columns:
+            sampled = all_hist.sort_values("severity", ascending=False)
+            sampled = sampled.groupby(sampled["date"].dt.date).head(25)
+            news = pd.DataFrame({
+                "title": sampled["event"],
+                "published_at": sampled["date"],
+                "source": "gdelt_historical",
+            })
+        logger.info(f"Sampled {len(news)} events for sentiment analysis (top 25/day by severity)")
+    else:
+        news = pd.DataFrame()
 
     # Also load any cached NewsAPI/RSS articles for richer coverage
     news_dir = DATA_DIR / "raw" / "news"
@@ -277,7 +306,7 @@ def main():
     parser.add_argument(
         "--historical",
         action="store_true",
-        help="Download GDELT Events 2.0 files (full 2015-present)",
+        help="Download GDELT daily aggregate files (full historical coverage)",
     )
     parser.add_argument(
         "--news", action="store_true", help="Collect news data (GDELT + RSS)"

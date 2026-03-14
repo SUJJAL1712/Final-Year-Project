@@ -1,16 +1,19 @@
 """
 Regional conflict event tracking from real GDELT data.
 
-Two data sources merged for full 2015-present coverage:
-1. GDELT Events 2.0 export files — historical backbone, CAMEO-coded events
-   (full coverage from Feb 2015 to present, no API key needed)
-2. GDELT DOC 2.0 API — recent article search (~last 3 months), classified
-   via LLM (if API key available) or keyword matching
+Two data sources merged for full 2013-present coverage:
+1. GDELT daily aggregate export files — historical backbone, CAMEO-coded
+   events (complete daily coverage from Apr 2013 to present, no API key)
+2. GDELT DOC 2.0 API — recent article search (~last 3 months only),
+   classified via LLM (if API key available) or keyword matching.
+   NOTE: DOC 2.0 has a rolling ~3-month window and cannot provide
+   historical article data.
 
 NO hardcoded events — all data sourced from real GDELT data.
 """
 
 import hashlib
+import ast
 import os
 import re
 
@@ -137,9 +140,9 @@ class ConflictEventTracker:
         Get classified conflict events from real GDELT data.
 
         Pipeline:
-        1. Load historical backbone from GDELT Events 2.0 export files
-           (full coverage from Feb 2015 to present, CAMEO-coded)
-        2. Fetch recent conflict news from GDELT DOC 2.0 API (~last 3 months)
+        1. Load historical backbone from GDELT daily aggregate files
+           (complete daily coverage from Apr 2013 to present, CAMEO-coded)
+        2. Fetch recent articles from GDELT DOC 2.0 API (~last 3 months only)
         3. Classify recent articles via LLM or keyword matching
         4. Merge historical + recent, deduplicate
         5. Cache to disk for fast reload
@@ -154,7 +157,7 @@ class ConflictEventTracker:
 
         frames = []
 
-        # Step 1: Historical backbone from GDELT Events 2.0 export files
+        # Step 1: Historical backbone from GDELT daily aggregate files
         try:
             from src.data_collection.gdelt_historical import GDELTHistoricalFetcher
             historical = GDELTHistoricalFetcher()
@@ -165,24 +168,10 @@ class ConflictEventTracker:
         except Exception as e:
             logger.warning(f"Historical fetch failed (will use DOC 2.0 only): {e}")
 
-        # Step 2: Recent articles from GDELT DOC 2.0 API
-        logger.info("Fetching recent conflict news from GDELT DOC 2.0 API...")
-        raw_news = self.gdelt.fetch_conflict_news(start_date, end_date)
-
-        if not raw_news.empty:
-            logger.info(f"GDELT DOC 2.0 returned {len(raw_news)} conflict articles")
-
-            # Step 3: Classify recent articles
-            if os.getenv("ANTHROPIC_API_KEY"):
-                logger.info("Using LLM classification (Claude API)...")
-                recent = self._classify_with_llm(raw_news)
-            else:
-                logger.info("No ANTHROPIC_API_KEY — using keyword classification...")
-                recent = self._classify_with_keywords(raw_news)
-
-            if not recent.empty:
-                recent["event_type"] = "conflict"
-                frames.append(recent)
+        # NOTE: GDELT DOC 2.0 API only covers ~3 months (rolling window),
+        # which is useless for a 10+ year analysis. The historical backbone
+        # above provides complete CAMEO-coded event coverage from 2013-present.
+        # DOC 2.0 is intentionally skipped.
 
         if not frames:
             logger.warning("No conflict events from any source")
@@ -352,16 +341,70 @@ class ConflictEventTracker:
             return events
 
         events = events.sort_values("date")
+
+        def _normalize_primary_countries(value) -> list[str]:
+            """Normalize cached/list country payloads into a clean string list."""
+            if isinstance(value, list):
+                return [str(v).strip() for v in value if str(v).strip()]
+
+            if isinstance(value, str):
+                raw = value.strip()
+                if not raw or raw.lower() in {"nan", "none"}:
+                    return []
+
+                # Handle CSV-serialized Python list strings like:
+                # "['Russia', 'Ukraine']"
+                if raw.startswith("[") and raw.endswith("]"):
+                    try:
+                        parsed = ast.literal_eval(raw)
+                        if isinstance(parsed, list):
+                            return [
+                                str(v).strip()
+                                for v in parsed
+                                if str(v).strip()
+                            ]
+                    except (ValueError, SyntaxError):
+                        pass
+
+                # Fallback: comma-separated strings
+                if "," in raw:
+                    return [
+                        part.strip().strip("'\"")
+                        for part in raw.split(",")
+                        if part.strip()
+                    ]
+
+                return [raw.strip().strip("'\"")]
+
+            return []
+
         # 2-day periods for fine granularity
         events["_period"] = (
             (events["date"] - pd.Timestamp("2015-01-01")).dt.days // 2
         )
         # Region key from involved countries — events about different conflicts
         # (different country pairs) are always kept as distinct events.
-        events["_region_key"] = events["primary_countries"].apply(
-            lambda x: (
-                "|".join(sorted(x)) if isinstance(x, list) and x else "unknown"
-            )
+        events["_region_key"] = events.apply(
+            lambda row: (
+                "|".join(
+                    sorted(
+                        set(
+                            _normalize_primary_countries(
+                                row.get("primary_countries", [])
+                            )
+                            or [
+                                c for c in [
+                                    str(row.get("source_country", "")).strip(),
+                                    str(row.get("target_country", "")).strip(),
+                                ]
+                                if c and c.lower() not in {"nan", "none"}
+                            ]
+                        )
+                    )
+                )
+                or "unknown"
+            ),
+            axis=1,
         )
 
         deduped = (

@@ -46,8 +46,8 @@ def main():
 
     **Data Sources:**
     - Stock prices from **Yahoo Finance** (full 2015-present)
-    - Historical events from **GDELT Events 2.0** export files (CAMEO-coded, Feb 2015-present)
-    - Recent news from **GDELT DOC 2.0 API** (~last 3 months)
+    - Historical events from **GDELT daily aggregate** export files (CAMEO-coded, Apr 2013-present)
+    - Recent articles from **GDELT DOC 2.0 API** (~last 3 months rolling window only)
     - RSS feeds and NewsAPI for real-time coverage
 
     **Navigate using the sidebar pages.**

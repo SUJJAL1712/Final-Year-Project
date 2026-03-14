@@ -77,7 +77,9 @@ class GDELTFetcher:
         self.cache_dir = cache_dir or (DATA_DIR / "raw" / "gdelt")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._last_request_time = 0.0
-        self._min_interval = 2.0  # seconds between requests
+        self._min_interval = 5.0  # seconds between requests
+        self._max_retries = 3
+        self._api_blocked = False  # Set True after persistent 429s to skip remaining calls
 
     def _rate_limit(self):
         """Respect GDELT's rate limits."""
@@ -125,6 +127,10 @@ class GDELTFetcher:
         """
         start_date = start_date or ANALYSIS_START
         end_date = end_date or ANALYSIS_END
+
+        if self._api_blocked:
+            return []
+
         self._rate_limit()
 
         # GDELT expects dates as YYYYMMDDHHMMSS
@@ -145,15 +151,39 @@ class GDELTFetcher:
             "sort": "datedesc",
         }
 
-        try:
-            resp = requests.get(GDELT_DOC_API, params=params, timeout=30)
-            resp.raise_for_status()
-            data = resp.json()
-        except requests.exceptions.JSONDecodeError:
-            logger.warning(f"GDELT returned non-JSON for query: {query[:50]}...")
-            return []
-        except requests.exceptions.RequestException as e:
-            logger.error(f"GDELT API error: {e}")
+        for attempt in range(1, self._max_retries + 1):
+            try:
+                if attempt > 1:
+                    wait = 10 * attempt
+                    logger.info(f"GDELT retry {attempt}, waiting {wait}s...")
+                    time.sleep(wait)
+
+                resp = requests.get(GDELT_DOC_API, params=params, timeout=30)
+
+                if resp.status_code == 429:
+                    if attempt < self._max_retries:
+                        logger.warning(f"GDELT 429 rate limited (attempt {attempt})")
+                        continue
+                    logger.warning(
+                        f"GDELT 429 after {self._max_retries} attempts — "
+                        f"skipping all remaining DOC 2.0 queries this session"
+                    )
+                    self._api_blocked = True
+                    return []
+
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except requests.exceptions.JSONDecodeError:
+                logger.warning(f"GDELT returned non-JSON for query: {query[:50]}...")
+                return []
+            except requests.exceptions.RequestException as e:
+                if attempt < self._max_retries:
+                    logger.warning(f"GDELT API error (attempt {attempt}): {e}")
+                    continue
+                logger.error(f"GDELT API error: {e}")
+                return []
+        else:
             return []
 
         articles = []

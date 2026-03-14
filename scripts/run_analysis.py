@@ -31,7 +31,6 @@ from src.utils.logger import setup_logger
 from src.utils.config import DATA_DIR
 from src.data_collection.stock_fetcher import StockDataFetcher
 from src.data_collection.conflict_tracker import ConflictEventTracker
-from src.data_collection.gdelt_fetcher import GDELTFetcher
 from src.directional_changes.dc_algorithm import (
     DirectionalChangeDetector,
     MultiThresholdDC,
@@ -121,9 +120,35 @@ def run_llm_analysis(events_df: pd.DataFrame, skip_llm: bool) -> pd.DataFrame:
         except Exception as e:
             logger.warning(f"Failed to read sentiment cache: {e}")
 
-    # Use GDELT news articles for sentiment analysis
-    gdelt = GDELTFetcher()
-    news = gdelt.fetch_all_news()
+    # Use historical GDELT events (108K+ spanning 2013-present) instead of
+    # the DOC 2.0 API which only covers ~3 months and is rate-limited.
+    # Load already-cached tariff + conflict events from --historical/--events.
+    from src.data_collection.gdelt_historical import GDELTHistoricalFetcher
+
+    hist = GDELTHistoricalFetcher()
+    tariff_hist = hist.fetch_tariff_events()
+    conflict_hist = hist.fetch_conflict_events()
+    frames = [df for df in [tariff_hist, conflict_hist] if not df.empty]
+
+    if frames:
+        all_hist = pd.concat(frames, ignore_index=True)
+        news = pd.DataFrame({
+            "title": all_hist["event"],
+            "published_at": all_hist["date"],
+            "source": "gdelt_historical",
+        })
+        logger.info(f"Loaded {len(news)} historical events")
+        if "severity" in all_hist.columns:
+            sampled = all_hist.sort_values("severity", ascending=False)
+            sampled = sampled.groupby(sampled["date"].dt.date).head(25)
+            news = pd.DataFrame({
+                "title": sampled["event"],
+                "published_at": sampled["date"],
+                "source": "gdelt_historical",
+            })
+        logger.info(f"Sampled {len(news)} events for sentiment analysis (top 25/day by severity)")
+    else:
+        news = pd.DataFrame()
 
     # Also load any cached NewsAPI/RSS articles for richer coverage
     news_dir = DATA_DIR / "raw" / "news"

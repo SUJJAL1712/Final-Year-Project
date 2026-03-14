@@ -1,11 +1,13 @@
 """
 Tariff event tracking from real GDELT data.
 
-Two data sources merged for full 2015-present coverage:
-1. GDELT Events 2.0 export files — historical backbone, CAMEO-coded events
-   (full coverage from Feb 2015 to present, no API key needed)
-2. GDELT DOC 2.0 API — recent article search (~last 3 months), classified
-   via LLM (if API key available) or keyword matching
+Two data sources merged for full 2013-present coverage:
+1. GDELT daily aggregate export files — historical backbone, CAMEO-coded
+   events (complete daily coverage from Apr 2013 to present, no API key)
+2. GDELT DOC 2.0 API — recent article search (~last 3 months only),
+   classified via LLM (if API key available) or keyword matching.
+   NOTE: DOC 2.0 has a rolling ~3-month window and cannot provide
+   historical article data.
 
 NO hardcoded events — all data sourced from real GDELT data.
 """
@@ -128,9 +130,9 @@ class TariffEventTracker:
         Get classified tariff events from real GDELT data.
 
         Pipeline:
-        1. Load historical backbone from GDELT Events 2.0 export files
-           (full coverage from Feb 2015 to present, CAMEO-coded)
-        2. Fetch recent tariff news from GDELT DOC 2.0 API (~last 3 months)
+        1. Load historical backbone from GDELT daily aggregate files
+           (complete daily coverage from Apr 2013 to present, CAMEO-coded)
+        2. Fetch recent articles from GDELT DOC 2.0 API (~last 3 months only)
         3. Classify recent articles via LLM or keyword matching
         4. Merge historical + recent, deduplicate
         5. Cache to disk for fast reload
@@ -146,7 +148,7 @@ class TariffEventTracker:
 
         frames = []
 
-        # Step 1: Historical backbone from GDELT Events 2.0 export files
+        # Step 1: Historical backbone from GDELT daily aggregate files
         try:
             from src.data_collection.gdelt_historical import GDELTHistoricalFetcher
             historical = GDELTHistoricalFetcher()
@@ -157,24 +159,10 @@ class TariffEventTracker:
         except Exception as e:
             logger.warning(f"Historical fetch failed (will use DOC 2.0 only): {e}")
 
-        # Step 2: Recent articles from GDELT DOC 2.0 API
-        logger.info("Fetching recent tariff news from GDELT DOC 2.0 API...")
-        raw_news = self.gdelt.fetch_tariff_news(start_date, end_date)
-
-        if not raw_news.empty:
-            logger.info(f"GDELT DOC 2.0 returned {len(raw_news)} tariff articles")
-
-            # Step 3: Classify recent articles
-            if os.getenv("ANTHROPIC_API_KEY"):
-                logger.info("Using LLM classification (Claude API)...")
-                recent = self._classify_with_llm(raw_news)
-            else:
-                logger.info("No ANTHROPIC_API_KEY — using keyword classification...")
-                recent = self._classify_with_keywords(raw_news)
-
-            if not recent.empty:
-                recent["event_type"] = "tariff"
-                frames.append(recent)
+        # NOTE: GDELT DOC 2.0 API only covers ~3 months (rolling window),
+        # which is useless for a 10+ year analysis. The historical backbone
+        # above provides complete CAMEO-coded event coverage from 2013-present.
+        # DOC 2.0 is intentionally skipped.
 
         if not frames:
             logger.warning("No tariff events from any source")

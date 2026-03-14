@@ -1,14 +1,27 @@
 """
-GDELT Events 2.0 historical data fetcher.
+GDELT historical event fetcher using daily aggregate export files.
 
-Downloads structured event data from GDELT's publicly available export files.
-These contain CAMEO-coded events (who did what to whom) with actor countries,
-severity (GoldsteinScale), and tone — covering February 2015 to present with
-FULL historical coverage.
+Downloads COMPLETE daily event data from GDELT's public archive at:
+    http://data.gdeltproject.org/events/YYYYMMDD.export.CSV.zip
 
-Unlike the GDELT DOC 2.0 API (which has a ~3-month rolling window for article
-search), these export files are permanently available. This module provides the
-historical backbone for event data from 2015 onward.
+Each daily file contains ALL events coded on that day — no sampling.
+These files use the GDELT 1.0 export format (58 tab-separated columns)
+with the same CAMEO coding system used by GDELT 2.0. The first 35 core
+columns (actors, event codes, GoldsteinScale, tone, mention counts) are
+identical between the two formats. These daily files have been published
+every day since April 1, 2013 and continue to be updated alongside
+GDELT 2.0.
+
+Data coverage:
+- Daily files available: 2013-04-01 to present (updated daily)
+- This project uses: max(ANALYSIS_START, 2013-04-01) to ANALYSIS_END
+
+NOT to be confused with:
+- GDELT Events 2.0 15-minute export files (96 files/day; each event
+  appears in only ONE file, so downloading a subset gives incomplete
+  coverage)
+- GDELT DOC 2.0 API (article search with ~3-month rolling window,
+  NOT suitable for historical data)
 
 No API key required — GDELT data is completely free and open.
 """
@@ -26,46 +39,70 @@ from loguru import logger
 
 from src.utils.config import DATA_DIR, ANALYSIS_START, ANALYSIS_END
 
-# GDELT Events 2.0 export file base URL
-GDELT_EVENTS_BASE = "http://data.gdeltproject.org/gdeltv2/"
+# ------------------------------------------------------------------ #
+# GDELT daily aggregate export file base URL
+# Each file contains ALL events coded on that day in a single CSV.
+# Format: GDELT 1.0 (58 columns, tab-separated, no header row).
+# ------------------------------------------------------------------ #
+GDELT_DAILY_BASE = "http://data.gdeltproject.org/events/"
 
-# Column names for GDELT Events 2.0 export format (61 columns, tab-separated, no header)
-GDELT_COLUMNS = [
+# Earliest available daily file
+GDELT_DAILY_START = datetime(2013, 4, 1)
+
+# Column names for GDELT 1.0 daily export format (58 columns).
+# The first 35 columns (through AvgTone) are identical to GDELT 2.0.
+# Columns 36-55 are geo fields (1.0 has 20 geo cols; 2.0 has 23 — the
+# three extra ADM2Code fields in 2.0 are the only structural difference).
+# Columns 56-57 are DATEADDED and SOURCEURL.
+GDELT_DAILY_COLUMNS = [
     "GlobalEventID", "Day", "MonthYear", "Year", "FractionDate",
+    # Actor 1 (10 fields)
     "Actor1Code", "Actor1Name", "Actor1CountryCode",
     "Actor1KnownGroupCode", "Actor1EthnicCode",
     "Actor1Religion1Code", "Actor1Religion2Code",
     "Actor1Type1Code", "Actor1Type2Code", "Actor1Type3Code",
+    # Actor 2 (10 fields)
     "Actor2Code", "Actor2Name", "Actor2CountryCode",
     "Actor2KnownGroupCode", "Actor2EthnicCode",
     "Actor2Religion1Code", "Actor2Religion2Code",
     "Actor2Type1Code", "Actor2Type2Code", "Actor2Type3Code",
-    "IsRootEvent", "EventCode", "EventBaseCode", "EventRootCode", "QuadClass",
-    "GoldsteinScale", "NumMentions", "NumSources", "NumArticles", "AvgTone",
+    # Event attributes (10 fields)
+    "IsRootEvent", "EventCode", "EventBaseCode", "EventRootCode",
+    "QuadClass", "GoldsteinScale", "NumMentions", "NumSources",
+    "NumArticles", "AvgTone",
+    # Actor 1 geo (7 fields — no ADM2Code in 1.0)
     "Actor1Geo_Type", "Actor1Geo_FullName", "Actor1Geo_CountryCode",
-    "Actor1Geo_ADM1Code", "Actor1Geo_ADM2Code",
-    "Actor1Geo_Lat", "Actor1Geo_Long", "Actor1Geo_FeatureID",
+    "Actor1Geo_ADM1Code", "Actor1Geo_Lat", "Actor1Geo_Long",
+    "Actor1Geo_FeatureID",
+    # Actor 2 geo (7 fields)
     "Actor2Geo_Type", "Actor2Geo_FullName", "Actor2Geo_CountryCode",
-    "Actor2Geo_ADM1Code", "Actor2Geo_ADM2Code",
-    "Actor2Geo_Lat", "Actor2Geo_Long", "Actor2Geo_FeatureID",
+    "Actor2Geo_ADM1Code", "Actor2Geo_Lat", "Actor2Geo_Long",
+    "Actor2Geo_FeatureID",
+    # Action geo (7 fields)
     "ActionGeo_Type", "ActionGeo_FullName", "ActionGeo_CountryCode",
-    "ActionGeo_ADM1Code", "ActionGeo_ADM2Code",
-    "ActionGeo_Lat", "ActionGeo_Long", "ActionGeo_FeatureID",
+    "ActionGeo_ADM1Code", "ActionGeo_Lat", "ActionGeo_Long",
+    "ActionGeo_FeatureID",
+    # Metadata
     "DATEADDED", "SOURCEURL",
 ]
 
-# Columns we actually read (saves memory)
+assert len(GDELT_DAILY_COLUMNS) == 58, (
+    f"Expected 58 columns for GDELT 1.0 format, got {len(GDELT_DAILY_COLUMNS)}"
+)
+
+# Columns we actually need (saves memory — skip geo and metadata)
 USE_COLS = [
     "GlobalEventID", "Day",
     "Actor1Name", "Actor1CountryCode",
     "Actor2Name", "Actor2CountryCode",
-    "IsRootEvent", "EventCode", "EventBaseCode", "EventRootCode", "QuadClass",
-    "GoldsteinScale", "NumMentions", "NumSources", "NumArticles", "AvgTone",
+    "IsRootEvent", "EventCode", "EventBaseCode", "EventRootCode",
+    "QuadClass", "GoldsteinScale", "NumMentions", "NumSources",
+    "NumArticles", "AvgTone",
     "SOURCEURL",
 ]
-USE_COL_INDICES = [GDELT_COLUMNS.index(c) for c in USE_COLS]
+USE_COL_INDICES = [GDELT_DAILY_COLUMNS.index(c) for c in USE_COLS]
 
-# Target countries (GDELT 3-letter ISO codes)
+# Target countries (GDELT uses FIPS 10-4 / ISO 3166 three-letter codes)
 TARGET_COUNTRIES = {
     "USA", "CHN", "IND", "RUS", "UKR", "ISR", "PSE",
     "PAK", "IRN", "TWN", "YEM", "JPN", "KOR",
@@ -81,7 +118,7 @@ COUNTRY_MAP = {
     "CAN": "Canada", "GBR": "UK",
 }
 
-# Country → which stock markets it affects
+# Country -> which stock markets it affects
 MARKET_IMPACT = {
     "Russia": ["US", "India", "China"],
     "Ukraine": ["US", "India", "China"],
@@ -98,35 +135,34 @@ MARKET_IMPACT = {
 
 class GDELTHistoricalFetcher:
     """
-    Fetches structured event data from GDELT Events 2.0 export files.
+    Fetches COMPLETE daily event data from GDELT daily aggregate files.
 
-    Downloads one file per day (with fallback hours), filters to relevant
-    events involving target countries, maps CAMEO codes to our tariff/conflict
-    categories, and caches all results locally.
+    Each daily file (one per day, 2013-04-01 to present) contains ALL
+    events coded on that day.  This is fundamentally different from the
+    GDELT 2.0 15-minute export files, where each event appears in only
+    one of 96 daily files — downloading a subset of those would give
+    incomplete coverage.
 
-    First run downloads ~4,000 files (one per day from Feb 2015 to present),
-    totaling ~400MB–1GB. Each file is cached individually so interrupted runs
-    resume where they left off. Subsequent runs only download new days.
+    Pipeline:
+      1. Download daily ZIP files (one per day, ~10-50 KB each).
+      2. Filter to root events involving target countries with >= 3 mentions.
+      3. Classify via CAMEO codes into tariff / conflict categories.
+      4. Map GoldsteinScale to 1-10 severity.
+      5. Infer affected stock markets from actor countries.
+      6. Deduplicate (keep highest-severity per 2-day window + category + country pair).
+      7. Cache per-day filtered CSVs and a combined processed cache.
+
+    First run downloads ~4,000+ files (one per day). Each file is cached
+    individually so interrupted runs resume where they left off.
     """
 
-    # CAMEO EventCode → tariff category mapping
+    # ----------------------------------------------------------------
+    # CAMEO EventCode -> tariff category mapping
+    # ----------------------------------------------------------------
     TARIFF_CODES = {
-        # Economic cooperation / trade deals
-        "031": "trade_deal_signed",
-        "0311": "trade_deal_signed",
-        "0331": "trade_deal_signed",
-        "0341": "trade_deal_signed",
-        "0356": "trade_deal_signed",
-        "0561": "trade_deal_signed",
-        "057": "trade_deal_signed",
-        "061": "trade_deal_signed",
-        "0611": "trade_deal_signed",
-        "071": "trade_deal_signed",
-        # Negotiations / consultations
-        "040": "tariff_negotiation",
-        "042": "tariff_negotiation",
-        "043": "tariff_negotiation",
-        "1031": "tariff_negotiation",
+        # ---- Policy actions (kept) ----
+        # These represent actual tariff/trade policy changes that move markets.
+        #
         # Easing sanctions/tariffs
         "0841": "sanctions_lifted",
         "0842": "tariff_reduction",
@@ -148,9 +184,18 @@ class GDELTHistoricalFetcher:
         "164": "sanctions_imposed",
         "1641": "sanctions_imposed",
         "1642": "sanctions_imposed",
+        #
+        # ---- Routine diplomatic codes REMOVED ----
+        # 031* (express intent to cooperate) — routine diplomacy, ~25K events
+        # 040/042/043 (consult/negotiate)    — routine diplomacy, ~64K events
+        # 057/061*/071* (economic cooperation) — routine diplomacy
+        # These overwhelm actual policy events (108K total vs 17K impactful)
+        # and produce near-constant tariff_event_ratio features.
     }
 
-    # CAMEO EventCode → conflict category mapping
+    # ----------------------------------------------------------------
+    # CAMEO EventCode -> conflict category mapping
+    # ----------------------------------------------------------------
     CONFLICT_CODES = {
         "145": "military_buildup",
         "150": "military_buildup",
@@ -199,85 +244,103 @@ class GDELTHistoricalFetcher:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_url(date: datetime, hour: int = 12) -> str:
-        """Build URL for a GDELT Events 2.0 export file."""
-        ts = date.strftime(f"%Y%m%d{hour:02d}0000")
-        return f"{GDELT_EVENTS_BASE}{ts}.export.CSV.zip"
+    def build_daily_url(date: datetime) -> str:
+        """Build URL for a GDELT daily aggregate export file.
+
+        These files contain ALL events coded on the given day in a single
+        CSV.  URL pattern: http://data.gdeltproject.org/events/YYYYMMDD.export.CSV.zip
+        """
+        return f"{GDELT_DAILY_BASE}{date.strftime('%Y%m%d')}.export.CSV.zip"
 
     def _download_day(self, date: datetime) -> pd.DataFrame | None:
-        """Download and filter a single day's GDELT export file.
+        """Download and filter a single day's complete GDELT daily file.
 
-        Tries multiple hours (noon, midnight, 6am, 6pm) in case one is missing.
-        Returns filtered DataFrame or None.
+        Each daily file contains every event coded on that day (unlike
+        the 15-minute files which partition events across 96 files).
+        Returns filtered DataFrame or None on failure.
         """
         date_str = date.strftime("%Y%m%d")
         cache_path = self._download_cache / f"{date_str}.csv"
 
-        # Cached already?
+        # Return cached result if available
         if cache_path.exists():
             try:
-                df = pd.read_csv(cache_path)
+                # Cache files are written after mixed-type numeric cleanup, but
+                # pandas may still infer mixed dtypes on reload. Force string
+                # to keep parsing stable and avoid noisy DtypeWarning spam.
+                df = pd.read_csv(cache_path, dtype=str, low_memory=False)
+                # Restore numeric dtypes expected by downstream processing.
+                if "NumMentions" in df.columns:
+                    df["NumMentions"] = pd.to_numeric(
+                        df["NumMentions"], errors="coerce"
+                    ).fillna(0)
+                for col in ["GoldsteinScale", "AvgTone", "NumSources", "NumArticles"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
                 if not df.empty:
                     return df
             except Exception:
                 pass  # re-download if corrupt
 
-        for hour in [12, 0, 6, 18]:
-            url = self._build_url(date, hour)
-            try:
-                resp = requests.get(url, timeout=30)
-                if resp.status_code == 404:
-                    continue
-                resp.raise_for_status()
+        url = self.build_daily_url(date)
+        try:
+            resp = requests.get(url, timeout=30)
+            if resp.status_code == 404:
+                logger.debug(f"No daily file for {date_str}")
+                return None
+            resp.raise_for_status()
 
-                with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
-                    csv_name = z.namelist()[0]
-                    with z.open(csv_name) as f:
-                        df = pd.read_csv(
-                            f,
-                            sep="\t",
-                            header=None,
-                            names=GDELT_COLUMNS,
-                            usecols=USE_COL_INDICES,
-                            dtype=str,
-                            on_bad_lines="skip",
-                        )
+            with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+                csv_name = z.namelist()[0]
+                with z.open(csv_name) as f:
+                    # Read only the columns we need.
+                    # Daily files have 58 columns (GDELT 1.0 format).
+                    # We pass names for all 58 so pandas can index correctly,
+                    # then usecols selects just what we need.
+                    df = pd.read_csv(
+                        f,
+                        sep="\t",
+                        header=None,
+                        names=GDELT_DAILY_COLUMNS,
+                        usecols=USE_COL_INDICES,
+                        dtype=str,
+                        on_bad_lines="skip",
+                    )
 
-                if df.empty:
-                    continue
-
-                # Filter: root events only
-                df = df[df["IsRootEvent"] == "1"]
-
-                # Filter: at least one actor from target countries
-                mask = (
-                    df["Actor1CountryCode"].isin(TARGET_COUNTRIES)
-                    | df["Actor2CountryCode"].isin(TARGET_COUNTRIES)
-                )
-                df = df[mask]
-
-                # Filter: significant events
-                df["NumMentions"] = pd.to_numeric(
-                    df["NumMentions"], errors="coerce"
-                ).fillna(0)
-                df = df[df["NumMentions"] >= 3]
-
-                # Convert numerics
-                for col in ["GoldsteinScale", "AvgTone", "NumSources", "NumArticles"]:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-
-                if not df.empty:
-                    df.to_csv(cache_path, index=False)
-                    return df
+            if df.empty:
                 return None
 
-            except requests.exceptions.RequestException:
-                continue
-            except Exception as e:
-                logger.debug(f"Error processing {url}: {e}")
-                continue
+            # Filter: root events only (avoids duplicated sub-events)
+            df = df[df["IsRootEvent"] == "1"].copy()
 
-        return None
+            # Filter: at least one actor from target countries
+            mask = (
+                df["Actor1CountryCode"].isin(TARGET_COUNTRIES)
+                | df["Actor2CountryCode"].isin(TARGET_COUNTRIES)
+            )
+            df = df[mask].copy()
+
+            # Filter: significant events (mentioned in >= 3 sources)
+            df["NumMentions"] = pd.to_numeric(
+                df["NumMentions"], errors="coerce"
+            ).fillna(0)
+            df = df[df["NumMentions"] >= 3].copy()
+
+            # Convert numeric columns
+            for col in ["GoldsteinScale", "AvgTone", "NumSources", "NumArticles"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+            if not df.empty:
+                df.to_csv(cache_path, index=False)
+                return df
+            return None
+
+        except requests.exceptions.RequestException as e:
+            logger.debug(f"Network error for {date_str}: {e}")
+            return None
+        except Exception as e:
+            logger.debug(f"Error processing {url}: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # Classification
@@ -286,6 +349,7 @@ class GDELTHistoricalFetcher:
     def _classify_event(self, event_code: str, event_root: str):
         """Classify a GDELT event into our tariff/conflict categories.
 
+        Checks full CAMEO code first, then 3-digit base code, then root.
         Returns (event_type, category) or ("", "") if not relevant.
         """
         # Check specific tariff codes (full code, then base/3-digit)
@@ -403,7 +467,7 @@ class GDELTHistoricalFetcher:
                 "tone": row.get("AvgTone", 0),
                 "num_mentions": row.get("NumMentions", 1),
                 "confidence": 0.8,
-                "data_source": "gdelt_events_v2",
+                "data_source": "gdelt_daily",
             })
 
         if not records:
@@ -417,18 +481,19 @@ class GDELTHistoricalFetcher:
         if events.empty:
             return events
 
-        events = events.sort_values(["date", "severity"], ascending=[True, False])
-        events["_period"] = (
-            (events["date"] - pd.Timestamp("2015-01-01")).dt.days // 2
+        df = events.copy()
+        df = df.sort_values(["date", "severity"], ascending=[True, False]).reset_index(drop=True)
+        df.loc[:, "_period"] = (
+            (df["date"] - pd.Timestamp("2015-01-01")).dt.days // 2
         )
-        events["_ckey"] = events.apply(
+        df.loc[:, "_ckey"] = df.apply(
             lambda r: f"{r['source_country']}|{r['target_country']}", axis=1
         )
-        events = events.drop_duplicates(
+        df = df.drop_duplicates(
             subset=["_period", "category", "_ckey"], keep="first"
         )
-        events = events.drop(columns=["_period", "_ckey"])
-        return events.sort_values("date").reset_index(drop=True)
+        df = df.drop(columns=["_period", "_ckey"])
+        return df.sort_values("date").reset_index(drop=True)
 
     # ------------------------------------------------------------------
     # Public API
@@ -442,10 +507,11 @@ class GDELTHistoricalFetcher:
         force_refresh: bool = False,
     ) -> pd.DataFrame:
         """
-        Fetch historical events from GDELT Events 2.0 export files.
+        Fetch historical events from GDELT daily aggregate export files.
 
-        Downloads one file per day, filters to target countries and relevant
-        CAMEO codes, maps to our event categories, and caches results.
+        Downloads one file per day (each containing ALL events for that
+        day), filters to target countries and relevant CAMEO codes, maps
+        to our event categories, and caches results.
 
         Args:
             start_date: Start of range (default: ANALYSIS_START).
@@ -459,7 +525,7 @@ class GDELTHistoricalFetcher:
 
         # Check combined processed cache
         cache_key = hashlib.sha256(
-            f"hist|{event_type}|{start_date}|{end_date}".encode()
+            f"daily|{event_type}|{start_date}|{end_date}".encode()
         ).hexdigest()[:12]
         cache_path = self.cache_dir / f"historical_{cache_key}.csv"
 
@@ -472,9 +538,9 @@ class GDELTHistoricalFetcher:
         # Build date range
         start = datetime.strptime(start_date[:10], "%Y-%m-%d")
         end = datetime.strptime(end_date[:10], "%Y-%m-%d")
-        # GDELT Events 2.0 started Feb 18, 2015
-        gdelt_start = datetime(2015, 2, 18)
-        start = max(start, gdelt_start)
+
+        # Clamp to GDELT daily file availability (2013-04-01 to present)
+        start = max(start, GDELT_DAILY_START)
         # Don't try to download future dates
         today = datetime.now()
         end = min(end, today)
@@ -486,20 +552,24 @@ class GDELTHistoricalFetcher:
             current += timedelta(days=1)
 
         logger.info(
-            f"Fetching GDELT Events 2.0 files for {len(dates)} days "
+            f"Fetching GDELT daily files for {len(dates)} days "
             f"({start.date()} to {end.date()})..."
         )
         logger.info("First run may take 15-30 minutes. Per-day files are cached for resume.")
 
-        # Download concurrently
-        all_dfs = []
+        # Download concurrently and process each day incrementally to avoid
+        # building a massive multi-year raw DataFrame in memory.
+        processed_chunks = []
         completed = 0
         errors = 0
+        day_files_with_data = 0
+        raw_filtered_rows = 0
 
         with ThreadPoolExecutor(max_workers=8) as executor:
             futures = {executor.submit(self._download_day, d): d for d in dates}
 
             for future in as_completed(futures):
+                day = futures[future]
                 completed += 1
                 if completed % 200 == 0:
                     logger.info(
@@ -509,23 +579,31 @@ class GDELTHistoricalFetcher:
                 try:
                     df = future.result()
                     if df is not None and not df.empty:
-                        all_dfs.append(df)
-                except Exception:
+                        processed = self._process_raw(df, event_type)
+                        day_files_with_data += 1
+                        raw_filtered_rows += len(df)
+                        if not processed.empty:
+                            processed_chunks.append(processed)
+                except Exception as e:
                     errors += 1
+                    logger.debug(f"Failed processing day {day.strftime('%Y-%m-%d')}: {e}")
 
-        logger.info(f"Downloaded {len(all_dfs)} day-files with data ({errors} errors)")
+        logger.info(f"Downloaded {day_files_with_data} day-files with data ({errors} errors)")
 
-        if not all_dfs:
+        if day_files_with_data == 0:
             logger.warning("No historical events found")
             empty = pd.DataFrame()
             empty.to_csv(cache_path, index=False)
             return empty
 
-        # Combine raw events and process
-        raw = pd.concat(all_dfs, ignore_index=True)
-        logger.info(f"Raw filtered events: {len(raw)}")
+        if not processed_chunks:
+            logger.warning("No relevant classified events found after filtering")
+            empty = pd.DataFrame()
+            empty.to_csv(cache_path, index=False)
+            return empty
 
-        events = self._process_raw(raw, event_type)
+        logger.info(f"Raw filtered events: {raw_filtered_rows}")
+        events = pd.concat(processed_chunks, ignore_index=True)
         logger.info(f"Classified events: {len(events)}")
 
         # Deduplicate

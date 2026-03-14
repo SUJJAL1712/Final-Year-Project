@@ -5,13 +5,14 @@ Uses yfinance for historical price data across all three markets.
 Handles index data, sector ETFs, and individual stocks.
 """
 
+import time
 from pathlib import Path
 
 import pandas as pd
 import yfinance as yf
 from loguru import logger
 
-from src.utils.config import get_config, DATA_DIR
+from src.utils.config import get_config, DATA_DIR, ANALYSIS_START, ANALYSIS_END
 
 
 class StockDataFetcher:
@@ -23,6 +24,13 @@ class StockDataFetcher:
         self.processed_dir = DATA_DIR / "processed" / "stocks"
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.processed_dir.mkdir(parents=True, exist_ok=True)
+        self.request_pause_seconds = 3.0
+        self.max_retries = 5
+
+    @staticmethod
+    def _safe_symbol(symbol: str) -> str:
+        """Convert a ticker into a filesystem-safe filename stem."""
+        return symbol.replace("^", "IDX_").replace(".", "_")
 
     def fetch_symbol(
         self,
@@ -43,33 +51,71 @@ class StockDataFetcher:
         Returns:
             DataFrame with OHLCV data
         """
-        start = start or self.config.time_range["start"]
-        end = end or self.config.time_range["end"]
+        start = start or ANALYSIS_START
+        end = end or ANALYSIS_END
 
         logger.info(f"Fetching {symbol} from {start} to {end}")
 
-        try:
-            ticker = yf.Ticker(symbol)
-            df = ticker.history(start=start, end=end, interval=interval)
+        cached = self.load_cached(symbol)
+        if cached is not None and not cached.empty:
+            try:
+                cache_start = cached.index.min()
+                cache_end = cached.index.max()
+                if cache_start <= pd.Timestamp(start) and cache_end >= pd.Timestamp(end):
+                    logger.info(f"Using cached stock data for {symbol}")
+                    return cached
+            except Exception:
+                pass
 
-            if df.empty:
-                logger.warning(f"No data returned for {symbol}")
-                return pd.DataFrame()
+        last_error = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                # Pause before each request to avoid rate limiting
+                if attempt > 1:
+                    wait_seconds = min(15 * (attempt - 1), 60)
+                    logger.info(f"Waiting {wait_seconds}s before retry {attempt} for {symbol}")
+                    time.sleep(wait_seconds)
 
-            # Standardize column names
-            df.columns = [c.lower().replace(" ", "_") for c in df.columns]
-            df.index.name = "date"
+                ticker = yf.Ticker(symbol)
+                df = ticker.history(start=start, end=end, interval=interval, auto_adjust=False)
 
-            # Save raw data
-            safe_symbol = symbol.replace("^", "IDX_").replace(".", "_")
-            df.to_csv(self.raw_dir / f"{safe_symbol}.csv")
+                if df.empty:
+                    logger.warning(f"No data returned for {symbol}")
+                    break
 
-            logger.info(f"Fetched {len(df)} rows for {symbol}")
-            return df
+                # Standardize column names
+                df.columns = [c.lower().replace(" ", "_") for c in df.columns]
+                df.index.name = "date"
 
-        except Exception as e:
-            logger.error(f"Failed to fetch {symbol}: {e}")
-            return pd.DataFrame()
+                # Save raw data
+                df.to_csv(self.raw_dir / f"{self._safe_symbol(symbol)}.csv")
+
+                logger.info(f"Fetched {len(df)} rows for {symbol}")
+                time.sleep(self.request_pause_seconds)
+                return df
+
+            except Exception as e:
+                last_error = e
+                message = str(e).lower()
+                is_rate_limited = "too many requests" in message or "rate limited" in message
+
+                if attempt < self.max_retries and is_rate_limited:
+                    logger.warning(
+                        f"Rate limited fetching {symbol} "
+                        f"(attempt {attempt}/{self.max_retries})"
+                    )
+                    continue
+
+                logger.error(f"Failed to fetch {symbol}: {e}")
+                break
+
+        if cached is not None and not cached.empty:
+            logger.warning(f"Using stale cached stock data for {symbol} after fetch failure")
+            return cached
+
+        if last_error:
+            logger.error(f"No cached fallback for {symbol} after fetch failure")
+        return pd.DataFrame()
 
     def fetch_market(self, market_id: str) -> dict[str, pd.DataFrame]:
         """
@@ -120,8 +166,7 @@ class StockDataFetcher:
 
     def load_cached(self, symbol: str) -> pd.DataFrame | None:
         """Load previously fetched data from disk."""
-        safe_symbol = symbol.replace("^", "IDX_").replace(".", "_")
-        path = self.raw_dir / f"{safe_symbol}.csv"
+        path = self.raw_dir / f"{self._safe_symbol(symbol)}.csv"
 
         if path.exists():
             df = pd.read_csv(path, index_col="date", parse_dates=True)
