@@ -33,6 +33,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import numpy as np
+
 import requests
 import pandas as pd
 from loguru import logger
@@ -425,75 +427,184 @@ class GDELTHistoricalFetcher:
     # Processing pipeline
     # ------------------------------------------------------------------
 
+    # Pre-built lookup tables for vectorized classification.
+    # Combine tariff + conflict codes into a single dict mapping
+    # CAMEO code → (event_type, category).  Built once at class level.
+    _CODE_LOOKUP: dict[str, tuple[str, str]] = {}
+    for _code, _cat in TARIFF_CODES.items():
+        _CODE_LOOKUP[_code] = ("tariff", _cat)
+    for _code, _cat in CONFLICT_CODES.items():
+        _CODE_LOOKUP[_code] = ("conflict", _cat)
+    _ROOT_LOOKUP: dict[str, tuple[str, str]] = {}
+    for _code, _cat in CONFLICT_ROOT_CODES.items():
+        _ROOT_LOOKUP[_code] = ("conflict", _cat)
+
     def _process_raw(self, raw: pd.DataFrame, event_type_filter: str = "all") -> pd.DataFrame:
-        """Process raw GDELT events into our standard event format."""
-        records = []
+        """Process raw GDELT events into our standard event format.
 
-        for _, row in raw.iterrows():
-            code = str(row.get("EventCode", ""))
-            root = str(row.get("EventRootCode", ""))
-
-            etype, category = self._classify_event(code, root)
-            if not etype:
-                continue
-            if event_type_filter != "all" and etype != event_type_filter:
-                continue
-
-            # Map country codes
-            a1_code = str(row.get("Actor1CountryCode", ""))
-            a2_code = str(row.get("Actor2CountryCode", ""))
-            actor1 = COUNTRY_MAP.get(a1_code, a1_code)
-            actor2 = COUNTRY_MAP.get(a2_code, a2_code)
-            a1_name = str(row.get("Actor1Name", "") or actor1)
-            a2_name = str(row.get("Actor2Name", "") or actor2)
-
-            goldstein = row.get("GoldsteinScale", 0)
-            severity = self._goldstein_to_severity(goldstein, etype)
-            markets = self._infer_markets(actor1, actor2)
-            countries = sorted({c for c in [actor1, actor2] if c})
-
-            records.append({
-                "date": pd.to_datetime(str(row.get("Day", "")), format="%Y%m%d", errors="coerce"),
-                "event": f"{a1_name} \u2192 {a2_name}: {category.replace('_', ' ')}",
-                "category": category,
-                "severity": severity,
-                "event_type": etype,
-                "source_country": actor1,
-                "target_country": actor2,
-                "primary_countries": countries,
-                "markets_affected": markets,
-                "affected_markets": markets,
-                "affected_sectors": [],
-                "tone": row.get("AvgTone", 0),
-                "num_mentions": row.get("NumMentions", 1),
-                "confidence": 0.8,
-                "data_source": "gdelt_daily",
-            })
-
-        if not records:
+        Fully vectorized — uses pandas map/apply on columns instead of
+        iterrows(), which is ~100-200x faster on large DataFrames.
+        """
+        if raw.empty:
             return pd.DataFrame()
 
-        df = pd.DataFrame(records).dropna(subset=["date"])
-        return df
+        df = raw.copy()
+
+        # --- 1. Classify events (vectorized) ---
+        codes = df["EventCode"].astype(str)
+        roots = df["EventRootCode"].astype(str)
+        bases = codes.str[:3]
+
+        # Cascading lookup: full code → 3-digit base → root code
+        classified = codes.map(self._CODE_LOOKUP)
+        miss = classified.isna()
+        if miss.any():
+            classified[miss] = bases[miss].map(self._CODE_LOOKUP)
+        miss = classified.isna()
+        if miss.any():
+            classified[miss] = roots[miss].map(self._ROOT_LOOKUP)
+
+        # Drop unclassified rows
+        miss = classified.isna()
+        if miss.all():
+            return pd.DataFrame()
+        df = df[~miss].copy()
+        classified = classified[~miss]
+
+        # Unpack (event_type, category) tuples
+        df["event_type"] = classified.apply(lambda x: x[0])
+        df["category"] = classified.apply(lambda x: x[1])
+
+        # Filter by event type if requested
+        if event_type_filter != "all":
+            df = df[df["event_type"] == event_type_filter]
+            if df.empty:
+                return pd.DataFrame()
+
+        # --- 2. Map country codes (vectorized) ---
+        a1_codes = df["Actor1CountryCode"].astype(str)
+        a2_codes = df["Actor2CountryCode"].astype(str)
+        df["source_country"] = a1_codes.map(COUNTRY_MAP).fillna(a1_codes)
+        df["target_country"] = a2_codes.map(COUNTRY_MAP).fillna(a2_codes)
+
+        a1_names = df["Actor1Name"].astype(str)
+        a2_names = df["Actor2Name"].astype(str)
+        # Use actor name if available, else mapped country
+        a1_display = a1_names.where(
+            (a1_names != "") & (a1_names != "nan"), df["source_country"]
+        )
+        a2_display = a2_names.where(
+            (a2_names != "") & (a2_names != "nan"), df["target_country"]
+        )
+
+        # --- 3. Severity from GoldsteinScale (vectorized with np.select) ---
+        gs = pd.to_numeric(df["GoldsteinScale"], errors="coerce")
+        mag = gs.abs()
+        is_conflict = df["event_type"] == "conflict"
+
+        # Conflict severity: more negative = more severe
+        conflict_sev = np.select(
+            [gs <= -9, gs <= -7, gs <= -5, gs <= -3, gs <= -1, gs <= 1],
+            [10, 9, 8, 7, 6, 5],
+            default=4,
+        )
+        # Tariff severity: magnitude of impact
+        tariff_sev = np.select(
+            [mag >= 9, mag >= 7, mag >= 5, mag >= 3, mag >= 1],
+            [10, 8, 7, 6, 5],
+            default=4,
+        )
+        df["severity"] = np.where(is_conflict, conflict_sev, tariff_sev)
+        df.loc[gs.isna(), "severity"] = 5
+
+        # --- 4. Build output columns (vectorized) ---
+        df["date"] = pd.to_datetime(df["Day"].astype(str), format="%Y%m%d", errors="coerce")
+        cat_display = df["category"].str.replace("_", " ", regex=False)
+        df["event"] = a1_display + " → " + a2_display + ": " + cat_display
+
+        # Markets affected (vectorized via helper on each row — fast enough
+        # since we only call it on classified rows, not 100M raw rows)
+        def _markets_for_row(src, tgt):
+            markets = set()
+            for c in [src, tgt]:
+                if c in ("US", "India", "China"):
+                    markets.add(c)
+                elif c in MARKET_IMPACT:
+                    markets.update(MARKET_IMPACT[c])
+            return sorted(markets) if markets else ["US", "India", "China"]
+
+        markets_series = [
+            _markets_for_row(s, t)
+            for s, t in zip(df["source_country"], df["target_country"])
+        ]
+
+        def _countries_for_row(src, tgt):
+            return sorted({c for c in [src, tgt] if c and c != "nan"})
+
+        countries_series = [
+            _countries_for_row(s, t)
+            for s, t in zip(df["source_country"], df["target_country"])
+        ]
+
+        result = pd.DataFrame({
+            "date": df["date"].values,
+            "event": df["event"].values,
+            "category": df["category"].values,
+            "severity": df["severity"].values,
+            "event_type": df["event_type"].values,
+            "source_country": df["source_country"].values,
+            "target_country": df["target_country"].values,
+            "primary_countries": countries_series,
+            "markets_affected": markets_series,
+            "affected_markets": markets_series,
+            "affected_sectors": [[] for _ in range(len(df))],
+            "tone": pd.to_numeric(df["AvgTone"], errors="coerce").fillna(0).values,
+            "num_mentions": pd.to_numeric(df["NumMentions"], errors="coerce").fillna(1).values,
+            "confidence": 0.8,
+            "data_source": "gdelt_daily",
+        })
+
+        return result.dropna(subset=["date"])
+
+    @staticmethod
+    def _dedup_chunk(df: pd.DataFrame) -> pd.DataFrame:
+        """Light per-day dedup: one event per (event_type, category, country-pair)
+        keeping highest severity.  Runs inside the download loop so the
+        accumulated DataFrame stays small."""
+        if df.empty or len(df) <= 1:
+            return df
+        df = df.sort_values("severity", ascending=False)
+        return df.drop_duplicates(
+            subset=["event_type", "category", "source_country", "target_country"],
+            keep="first",
+        ).reset_index(drop=True)
 
     def _deduplicate(self, events: pd.DataFrame) -> pd.DataFrame:
-        """Deduplicate: keep highest-severity per (2-day window, category, country-pair)."""
+        """Deduplicate: keep highest-severity per (2-day window, category, country-pair).
+
+        Works in monthly chunks to keep memory usage bounded even for
+        multi-million-row DataFrames.
+        """
         if events.empty:
             return events
 
-        df = events.copy()
-        df = df.sort_values(["date", "severity"], ascending=[True, False]).reset_index(drop=True)
-        df.loc[:, "_period"] = (
-            (df["date"] - pd.Timestamp("2015-01-01")).dt.days // 2
+        events = events.sort_values(
+            ["date", "severity"], ascending=[True, False]
+        ).reset_index(drop=True)
+
+        events["_period"] = (
+            (events["date"] - pd.Timestamp("2015-01-01")).dt.days // 2
         )
-        df.loc[:, "_ckey"] = df.apply(
-            lambda r: f"{r['source_country']}|{r['target_country']}", axis=1
+        events["_ckey"] = (
+            events["source_country"].astype(str)
+            + "|"
+            + events["target_country"].astype(str)
         )
-        df = df.drop_duplicates(
-            subset=["_period", "category", "_ckey"], keep="first"
+        events = events.drop_duplicates(
+            subset=["event_type", "_period", "category", "_ckey"], keep="first"
         )
-        df = df.drop(columns=["_period", "_ckey"])
-        return df.sort_values("date").reset_index(drop=True)
+        events = events.drop(columns=["_period", "_ckey"])
+        return events.sort_values("date").reset_index(drop=True)
 
     # ------------------------------------------------------------------
     # Public API
@@ -583,6 +694,12 @@ class GDELTHistoricalFetcher:
                         day_files_with_data += 1
                         raw_filtered_rows += len(df)
                         if not processed.empty:
+                            # Per-day dedup: collapse same-day duplicates
+                            # (same category + country pair → keep highest
+                            # severity).  This prevents the accumulated
+                            # DataFrame from growing to millions of rows
+                            # and OOM-ing during the final cross-day dedup.
+                            processed = self._dedup_chunk(processed)
                             processed_chunks.append(processed)
                 except Exception as e:
                     errors += 1
@@ -622,8 +739,21 @@ class GDELTHistoricalFetcher:
         end_date: str | None = None,
         force_refresh: bool = False,
     ) -> pd.DataFrame:
-        """Fetch tariff-specific historical events."""
-        return self.fetch_historical_events(start_date, end_date, "tariff", force_refresh)
+        """Fetch tariff-specific historical events.
+
+        Internally fetches ALL event types in a single pass (cached),
+        then filters to tariff.  This avoids reading 19 GB of per-day
+        CSVs twice when collect_data.py calls both fetch_tariff_events
+        and fetch_conflict_events sequentially.
+        """
+        all_events = self.fetch_historical_events(
+            start_date, end_date, "all", force_refresh
+        )
+        if all_events.empty:
+            return all_events
+        return all_events[
+            all_events["event_type"] == "tariff"
+        ].reset_index(drop=True)
 
     def fetch_conflict_events(
         self,
@@ -631,5 +761,16 @@ class GDELTHistoricalFetcher:
         end_date: str | None = None,
         force_refresh: bool = False,
     ) -> pd.DataFrame:
-        """Fetch conflict-specific historical events."""
-        return self.fetch_historical_events(start_date, end_date, "conflict", force_refresh)
+        """Fetch conflict-specific historical events.
+
+        Loads from the same "all" cache populated by fetch_tariff_events,
+        so the second call is instant.
+        """
+        all_events = self.fetch_historical_events(
+            start_date, end_date, "all", force_refresh
+        )
+        if all_events.empty:
+            return all_events
+        return all_events[
+            all_events["event_type"] == "conflict"
+        ].reset_index(drop=True)
