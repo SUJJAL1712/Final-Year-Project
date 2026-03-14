@@ -140,13 +140,13 @@ def run_llm_analysis(events_df: pd.DataFrame, skip_llm: bool) -> pd.DataFrame:
         logger.info(f"Loaded {len(news)} historical events")
         if "severity" in all_hist.columns:
             sampled = all_hist.sort_values("severity", ascending=False)
-            sampled = sampled.groupby(sampled["date"].dt.date).head(10)
+            sampled = sampled.groupby(sampled["date"].dt.date).head(15)
             news = pd.DataFrame({
                 "title": sampled["event"],
                 "published_at": sampled["date"],
                 "source": "gdelt_historical",
             })
-        logger.info(f"Sampled {len(news)} events for sentiment analysis (top 10/day by severity)")
+        logger.info(f"Sampled {len(news)} events for sentiment analysis (top 15/day by severity)")
     else:
         news = pd.DataFrame()
 
