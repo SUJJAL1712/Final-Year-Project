@@ -14,9 +14,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_DIR = PROJECT_ROOT / "config"
 DATA_DIR = PROJECT_ROOT / "data"
 
-# Dynamic analysis date range — always extends to today's date
+# Fixed analysis date range — set once, reuse across all runs.
+# Change ANALYSIS_END manually when you want to include newer data.
 ANALYSIS_START = "2015-01-01"
-ANALYSIS_END = datetime.now().strftime("%Y-%m-%d")
+ANALYSIS_END = "2026-03-12"
 
 
 class Config:
