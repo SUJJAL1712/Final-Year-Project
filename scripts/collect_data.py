@@ -236,17 +236,17 @@ def run_sentiment_analysis():
             "source": "gdelt_historical",
         })
         logger.info(f"Loaded {len(news)} historical events")
-        # Sample to control API cost: keep up to 25 highest-severity events
-        # per day (total, not per country). With Haiku this costs ~$2.50.
+        # Sample to control API cost: keep up to 10 highest-severity events
+        # per day (total, not per country). With Haiku this costs ~$1.
         if "severity" in all_hist.columns:
             sampled = all_hist.sort_values("severity", ascending=False)
-            sampled = sampled.groupby(sampled["date"].dt.date).head(25)
+            sampled = sampled.groupby(sampled["date"].dt.date).head(10)
             news = pd.DataFrame({
                 "title": sampled["event"],
                 "published_at": sampled["date"],
                 "source": "gdelt_historical",
             })
-        logger.info(f"Sampled {len(news)} events for sentiment analysis (top 25/day by severity)")
+        logger.info(f"Sampled {len(news)} events for sentiment analysis (top 10/day by severity)")
     else:
         news = pd.DataFrame()
 
