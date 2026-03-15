@@ -132,8 +132,12 @@ class CrossMarketContagionAnalyzer:
             # Cumulative return over window
             cum_return = target_window.sum()
 
-            # Transmission ratio
-            transmission = cum_return / results["source_cum_return"] if results["source_cum_return"] != 0 else 0
+            # Transmission ratio (guard against near-zero denominator)
+            src_ret = results["source_cum_return"]
+            if abs(src_ret) > 1e-8:
+                transmission = cum_return / src_ret
+            else:
+                transmission = 0.0
 
             results[f"{market_name}_cum_return"] = cum_return
             results[f"{market_name}_peak_lag_days"] = peak_lag

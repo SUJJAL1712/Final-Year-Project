@@ -434,8 +434,9 @@ class ConflictEventTracker:
         from src.data_collection.tariff_tracker import TariffEventTracker
 
         # Date-range-aware combined cache
+        from src.utils.config import ANALYSIS_START, ANALYSIS_END
         range_hash = hashlib.sha256(
-            b"combined_geopolitical_events"
+            f"combined_geopolitical_events_{ANALYSIS_START}_{ANALYSIS_END}".encode()
         ).hexdigest()[:10]
         cache_path = self.events_dir / f"all_geopolitical_events_{range_hash}.csv"
 
@@ -453,17 +454,21 @@ class ConflictEventTracker:
         frames = []
 
         if not tariff_events.empty:
-            tariff_std = tariff_events[
-                ["date", "event", "category", "severity"]
-            ].copy()
+            keep_cols = ["date", "event", "category", "severity"]
+            for col in ["source_country", "target_country"]:
+                if col in tariff_events.columns:
+                    keep_cols.append(col)
+            tariff_std = tariff_events[keep_cols].copy()
             tariff_std["event_type"] = "tariff"
             tariff_std["markets_affected"] = tariff_events["markets_affected"]
             frames.append(tariff_std)
 
         if not conflict_events.empty:
-            conflict_std = conflict_events[
-                ["date", "event", "category", "severity"]
-            ].copy()
+            keep_cols = ["date", "event", "category", "severity"]
+            for col in ["source_country", "target_country"]:
+                if col in conflict_events.columns:
+                    keep_cols.append(col)
+            conflict_std = conflict_events[keep_cols].copy()
             conflict_std["event_type"] = "conflict"
             conflict_std["markets_affected"] = conflict_events["affected_markets"]
             frames.append(conflict_std)

@@ -594,7 +594,8 @@ def run_regime_analysis(
                 results.append({
                     "regime": f"event_type_{etype}",
                     "n_samples": acar["n_events"],
-                    "mean_accuracy": float(acar["acar"].iloc[-1]),  # ACAR as metric
+                    "mean_accuracy": np.nan,
+                    "acar": float(acar["acar"].iloc[-1]),
                     "ci_lower": acar.get("acar_ci_lower", np.nan),
                     "ci_upper": acar.get("acar_ci_upper", np.nan),
                     "mean_f1": np.nan,

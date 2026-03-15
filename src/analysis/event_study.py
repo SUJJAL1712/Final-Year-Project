@@ -176,10 +176,16 @@ class EventStudyAnalyzer:
             DataFrame with results for each event
         """
         results = []
+        seen_snapped_dates = set()
 
         for date in event_dates:
             result = self.single_event_study(prices, date, market_returns)
             if "error" not in result:
+                # Skip pseudo-duplicates: multiple events snapped to same trading day
+                snapped = result["event_date"]
+                if snapped in seen_snapped_dates:
+                    continue
+                seen_snapped_dates.add(snapped)
                 results.append({
                     "event_date": result["event_date"],
                     "event_day_ar": result["event_day_ar"],
@@ -210,10 +216,15 @@ class EventStudyAnalyzer:
         This is the primary aggregate measure of event impact.
         """
         all_cars = []
+        seen_snapped_dates = set()
 
         for date in event_dates:
             result = self.single_event_study(prices, date, market_returns)
             if "error" not in result:
+                snapped = result["event_date"]
+                if snapped in seen_snapped_dates:
+                    continue
+                seen_snapped_dates.add(snapped)
                 car = result["cumulative_abnormal_returns"]
                 # Normalize index to relative days
                 car.index = range(-self.pre_window, len(car) - self.pre_window)
@@ -316,13 +327,18 @@ class EventStudyAnalyzer:
             return {"error": "no_valid_events"}
         real_acar = float(real["acar"].iloc[-1])
 
-        # Build exclusion set: real event dates ± 20 days
+        # Build exclusion set from event dates.
+        # With high-density events (~4000 across 2752 trading days), a ±20 day
+        # exclusion zone eliminates nearly ALL trading days, making the placebo
+        # test degenerate (std ≈ 0, p = 1.0 always).  Use ±5 days instead —
+        # still avoids overlap with the post-event window while keeping a
+        # viable pool of non-event dates.
         event_ts = pd.to_datetime(event_dates)
         if returns.index.tz is not None:
             event_ts = event_ts.tz_localize(returns.index.tz) if event_ts.tz is None else event_ts.tz_convert(returns.index.tz)
         exclude = set()
         for d in event_ts:
-            for offset in range(-20, 21):
+            for offset in range(-5, 6):
                 exclude.add(d + pd.Timedelta(days=offset))
 
         # Available dates for placebo

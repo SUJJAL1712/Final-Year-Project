@@ -564,7 +564,20 @@ class GDELTHistoricalFetcher:
             "data_source": "gdelt_daily",
         })
 
-        return result.dropna(subset=["date"])
+        result = result.dropna(subset=["date"])
+
+        # Filter to analysis date range — raw GDELT can contain dates outside
+        # our window (e.g. 1920-01-01 from malformed Day fields).
+        from src.utils.config import ANALYSIS_START, ANALYSIS_END
+        start_ts = pd.Timestamp(ANALYSIS_START)
+        end_ts = pd.Timestamp(ANALYSIS_END)
+        before = len(result)
+        result = result[(result["date"] >= start_ts) & (result["date"] <= end_ts)]
+        dropped = before - len(result)
+        if dropped > 0:
+            logger.info(f"Filtered {dropped} events outside analysis range [{ANALYSIS_START}, {ANALYSIS_END}]")
+
+        return result
 
     @staticmethod
     def _dedup_chunk(df: pd.DataFrame) -> pd.DataFrame:

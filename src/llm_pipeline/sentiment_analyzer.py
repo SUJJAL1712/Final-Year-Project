@@ -123,6 +123,10 @@ class FinancialSentimentAnalyzer:
                         item["title"] = chunk[idx]["title"]
                         item["date"] = chunk[idx].get("published_at", "")
                     results.append(item)
+            else:
+                logger.warning(
+                    f"LLM batch sentiment returned non-list (error?): {str(batch_result)[:200]}"
+                )
 
         return pd.DataFrame(results)
 
