@@ -49,12 +49,11 @@ class BaselineModels:
         """
         momentum = returns.rolling(lookback).sum()
 
-        preds = pd.Series(0, index=labels.index)
-        preds[momentum > 0.005] = 1
-        preds[momentum < -0.005] = -1
-
-        common = preds.index.intersection(labels.index)
-        preds = preds[common]
+        common = momentum.index.intersection(labels.index)
+        mom = momentum[common]
+        preds = pd.Series(1, index=common)  # 1 = neutral
+        preds[mom > 0.005] = 2   # up
+        preds[mom < -0.005] = 0  # down
         y = labels[common]
 
         return {
@@ -70,12 +69,11 @@ class BaselineModels:
         """
         momentum = returns.rolling(lookback).sum()
 
-        preds = pd.Series(0, index=labels.index)
-        preds[momentum > 0.005] = -1  # Predict reversal
-        preds[momentum < -0.005] = 1
-
-        common = preds.index.intersection(labels.index)
-        preds = preds[common]
+        common = momentum.index.intersection(labels.index)
+        mom = momentum[common]
+        preds = pd.Series(1, index=common)  # 1 = neutral
+        preds[mom > 0.005] = 0  # Predict reversal (down)
+        preds[mom < -0.005] = 2  # Predict reversal (up)
         y = labels[common]
 
         return {
@@ -97,8 +95,8 @@ class BaselineModels:
 
     @staticmethod
     def buy_and_hold_baseline(labels: pd.Series) -> dict:
-        """Buy-and-hold baseline: always predict +1 (up)."""
-        preds = pd.Series(1, index=labels.index)
+        """Buy-and-hold baseline: always predict up (2)."""
+        preds = pd.Series(2, index=labels.index)
         return {
             "model": "buy_and_hold",
             "mean_accuracy": accuracy_score(labels, preds),

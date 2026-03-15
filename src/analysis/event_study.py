@@ -59,6 +59,12 @@ class EventStudyAnalyzer:
         event_date = pd.Timestamp(event_date)
         returns = compute_returns(prices, method="simple")
 
+        # Match timezone of returns index
+        if returns.index.tz is not None and event_date.tz is None:
+            event_date = event_date.tz_localize(returns.index.tz)
+        elif returns.index.tz is None and event_date.tz is not None:
+            event_date = event_date.tz_localize(None)
+
         # Find event date in the index (or nearest trading day)
         if event_date not in returns.index:
             nearest = returns.index[returns.index.get_indexer([event_date], method="nearest")[0]]
@@ -312,6 +318,8 @@ class EventStudyAnalyzer:
 
         # Build exclusion set: real event dates ± 20 days
         event_ts = pd.to_datetime(event_dates)
+        if returns.index.tz is not None:
+            event_ts = event_ts.tz_localize(returns.index.tz) if event_ts.tz is None else event_ts.tz_convert(returns.index.tz)
         exclude = set()
         for d in event_ts:
             for offset in range(-20, 21):
@@ -325,6 +333,18 @@ class EventStudyAnalyzer:
         # Run placebo event studies
         placebo_cars = []
         n_events_per_placebo = min(len(event_dates), 50)  # cap for speed
+
+        # If available dates are fewer than needed per placebo, reduce or use replace=True
+        if len(available) < n_events_per_placebo:
+            logger.warning(
+                f"Placebo test: only {len(available)} available dates "
+                f"(need {n_events_per_placebo}). Reducing events per placebo."
+            )
+            n_events_per_placebo = max(len(available), 1)
+
+        if len(available) < 2:
+            logger.warning("Not enough non-event dates for placebo test")
+            return {"error": "insufficient_non_event_dates"}
 
         for _ in range(n_placebos):
             placebo_dates = rng.choice(available, size=n_events_per_placebo, replace=False)

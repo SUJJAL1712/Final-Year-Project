@@ -61,7 +61,8 @@ class StockDataFetcher:
             try:
                 cache_start = cached.index.min()
                 cache_end = cached.index.max()
-                if cache_start <= pd.Timestamp(start) and cache_end >= pd.Timestamp(end):
+                # Accept cache if within 5 days of requested end (weekends/holidays)
+                if cache_start <= pd.Timestamp(start) and cache_end >= pd.Timestamp(end) - pd.Timedelta(days=5):
                     logger.info(f"Using cached stock data for {symbol}")
                     return cached
             except Exception:
@@ -86,6 +87,9 @@ class StockDataFetcher:
                 # Standardize column names
                 df.columns = [c.lower().replace(" ", "_") for c in df.columns]
                 df.index.name = "date"
+                # Strip timezone to avoid tz mismatch issues downstream
+                if hasattr(df.index, "tz") and df.index.tz is not None:
+                    df.index = df.index.tz_localize(None)
 
                 # Save raw data
                 df.to_csv(self.raw_dir / f"{self._safe_symbol(symbol)}.csv")
@@ -170,6 +174,8 @@ class StockDataFetcher:
 
         if path.exists():
             df = pd.read_csv(path, index_col="date", parse_dates=True)
+            if hasattr(df.index, "tz") and df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
             return df
         return None
 

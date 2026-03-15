@@ -251,9 +251,9 @@ class FeatureEngineer:
         """
         if method == "direction":
             future_return = prices.pct_change(horizon).shift(-horizon)
-            labels = pd.Series(0, index=prices.index)
-            labels[future_return > 0.005] = 1   # Up more than 0.5%
-            labels[future_return < -0.005] = -1  # Down more than 0.5%
+            labels = pd.Series(1, index=prices.index)  # 1 = neutral
+            labels[future_return > 0.005] = 2   # Up more than 0.5%
+            labels[future_return < -0.005] = 0  # Down more than 0.5%
             return labels.rename("label")
 
         elif method == "return":

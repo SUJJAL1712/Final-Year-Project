@@ -211,7 +211,7 @@ def run_event_study(
     logger.info(f"=== Event Study: {market_name} ===")
 
     analyzer = EventStudyAnalyzer()
-    event_dates = events_df["date"].astype(str).tolist()
+    event_dates = sorted(events_df["date"].astype(str).unique().tolist())
 
     if not event_dates:
         logger.warning(f"No events for {market_name}, skipping event study")
@@ -242,7 +242,7 @@ def run_dc_event_correlation(
     logger.info(f"=== DC-Event Correlation: {market_name} ===")
 
     correlator = DCEventCorrelator(0.02)
-    event_dates = events_df["date"].astype(str).tolist()
+    event_dates = sorted(events_df["date"].astype(str).unique().tolist())
 
     if not event_dates:
         logger.warning(f"No events for {market_name}, skipping correlation")
@@ -317,7 +317,7 @@ def run_cross_market_contagion(
                 market_prices["US"],
                 market_prices["India"],
                 market_prices["China"],
-                tariff_events["date"].astype(str).tolist(),
+                sorted(tariff_events["date"].astype(str).unique().tolist()),
             )
             logger.info(
                 f"India trade diversion: "
@@ -393,7 +393,7 @@ def run_extended_event_study(
     logger.info(f"=== Extended Event Study: {market_name} ===")
 
     analyzer = EventStudyAnalyzer()
-    event_dates = events_df["date"].astype(str).tolist()
+    event_dates = sorted(events_df["date"].astype(str).unique().tolist())
 
     if not event_dates:
         logger.warning(f"No events for {market_name}, skipping extended event study")
@@ -588,7 +588,7 @@ def run_regime_analysis(
             sub_events = events_df[events_df["event_type"] == etype]
             if len(sub_events) < 5:
                 continue
-            event_dates = sub_events["date"].astype(str).tolist()
+            event_dates = sorted(sub_events["date"].astype(str).unique().tolist())
             acar = analyzer.average_car(prices, event_dates)
             if "error" not in acar:
                 results.append({
@@ -655,14 +655,21 @@ def main():
             continue
 
         prices = df["close"]
+        if hasattr(prices.index, "tz") and prices.index.tz is not None:
+            prices.index = prices.index.tz_localize(None)
         all_prices[market] = prices
 
-        # Get market-specific events
+        # Get market-specific events (filter out invalid pre-2015 dates)
         market_events = events[
             events["markets_affected"].apply(
                 lambda x, m=market: m in str(x)
             )
         ] if not events.empty else pd.DataFrame()
+        if not market_events.empty:
+            # Skip first 90 days to ensure sufficient estimation window for event study
+            min_date = str(pd.Timestamp(ANALYSIS_START) + pd.Timedelta(days=90))[:10]
+            market_events = market_events[market_events["date"] >= min_date]
+            logger.info(f"Market events for {market}: {len(market_events)} (unique dates: {market_events['date'].nunique()})")
 
         # Run analyses
         run_dc_analysis(prices, market)
