@@ -133,8 +133,18 @@ with tab1:
                 ci_high = acar_result["acar_ci_upper"]
                 col4.metric("95% CI", f"[{ci_low:.4f}, {ci_high:.4f}]")
 
-            # Individual event results
-            multi_results = analyzer.multi_event_study(prices, event_dates)
+            # Individual event results — try precomputed first
+            multi_results = None
+            es_path = RESULTS_DIR / f"event_study_{market_name}.csv"
+            if es_path.exists():
+                try:
+                    multi_results = pd.read_csv(es_path)
+                except Exception:
+                    multi_results = None
+
+            if multi_results is None:
+                multi_results = analyzer.multi_event_study(prices, event_dates)
+
             if not multi_results.empty:
                 with st.expander("Individual Event Results"):
                     st.dataframe(
