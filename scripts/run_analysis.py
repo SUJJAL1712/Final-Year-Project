@@ -1353,7 +1353,10 @@ def main():
         for market in ["US", "India", "China"]:
             df = fetcher.fetch_symbol(symbol_map[market], ANALYSIS_START, ANALYSIS_END)
             if not df.empty:
-                all_prices[market] = df
+                prices = df["close"]
+                if hasattr(prices.index, "tz") and prices.index.tz is not None:
+                    prices.index = prices.index.tz_localize(None)
+                all_prices[market] = prices
         save_key_figures(all_prices, RESULTS_DIR)
         logger.info("Done — figures saved to results/figures/")
         return
