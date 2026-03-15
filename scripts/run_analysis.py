@@ -349,7 +349,7 @@ def run_model_training(
         sentiment_df=sentiment_df,
         market_id=market_id,
     )
-    labels = engineer.build_labels(prices, horizon=5, method="direction")
+    labels = engineer.build_labels(prices, horizon=5, method="direction_vol")
 
     logger.info(f"Features: {features.shape}")
     logger.info(f"Labels: {labels.value_counts().to_dict()}")
@@ -441,7 +441,7 @@ def run_extended_model_training(
         sentiment_df=sentiment_df,
         market_id=market_id,
     )
-    labels = engineer.build_labels(prices, horizon=5, method="direction")
+    labels = engineer.build_labels(prices, horizon=5, method="direction_vol")
 
     model = HybridDCLLMPredictor()
 
@@ -507,7 +507,7 @@ def run_dc_sensitivity(
             sentiment_df=sentiment_df,
             market_id=market_id,
         )
-        labels = engineer.build_labels(prices, horizon=5, method="direction")
+        labels = engineer.build_labels(prices, horizon=5, method="direction_vol")
 
         model = HybridDCLLMPredictor()
         model.define_feature_groups(features)
@@ -553,7 +553,7 @@ def run_regime_analysis(
         sentiment_df=sentiment_df,
         market_id=market_id,
     )
-    labels = engineer.build_labels(prices, horizon=5, method="direction")
+    labels = engineer.build_labels(prices, horizon=5, method="direction_vol")
 
     results = []
     cutoff = pd.Timestamp("2020-01-01")
@@ -605,6 +605,337 @@ def run_regime_analysis(
     if not df.empty:
         df.to_csv(RESULTS_DIR / f"regime_analysis_{market_name}.csv", index=False)
         logger.info(f"Regime analysis:\n{df.to_string()}")
+
+
+def run_multi_horizon_analysis(
+    prices: pd.Series,
+    events_df: pd.DataFrame,
+    market_name: str,
+    sentiment_df: pd.DataFrame | None = None,
+):
+    """Test model vs persistence across multiple prediction horizons.
+
+    Uses volatility-scaled thresholds so each horizon gets an
+    appropriately sized neutral zone. This reveals whether model
+    advantage emerges at longer horizons where persistence is weaker.
+    """
+    logger.info(f"=== Multi-Horizon Analysis: {market_name} ===")
+    from src.models.feature_engineering import FeatureEngineer
+
+    market_id = market_name.lower()
+    results = []
+
+    for horizon in [1, 3, 5, 10]:
+        logger.info(f"  Horizon {horizon}d ...")
+        engineer = FeatureEngineer(dc_threshold=0.02)
+        features = engineer.build_unified_features(
+            prices,
+            events_df=events_df,
+            sentiment_df=sentiment_df,
+            market_id=market_id,
+        )
+        labels = engineer.build_labels(prices, horizon=horizon, method="direction_vol")
+
+        # Align
+        common = features.index.intersection(labels.dropna().index)
+        if len(common) < 100:
+            logger.warning(f"  Only {len(common)} samples for {horizon}d, skipping")
+            continue
+
+        feat = features.loc[common]
+        lab = labels.loc[common]
+
+        # Persistence baseline
+        baselines = BaselineModels()
+        persistence = baselines.persistence_baseline(lab)
+
+        # Best model (xgboost)
+        model = HybridDCLLMPredictor()
+        model_result = model.train_and_evaluate(
+            feat, lab, feat.columns.tolist(), "xgboost"
+        )
+        if "error" in model_result:
+            logger.warning(f"  Model error at {horizon}d: {model_result['error']}")
+            continue
+
+        lift = model_result["mean_accuracy"] - persistence["mean_accuracy"]
+        results.append({
+            "horizon": horizon,
+            "persistence_accuracy": persistence["mean_accuracy"],
+            "persistence_f1": persistence.get("mean_f1", np.nan),
+            "model_accuracy": model_result["mean_accuracy"],
+            "model_f1": model_result["mean_f1"],
+            "lift_accuracy": lift,
+            "lift_f1": model_result["mean_f1"] - persistence.get("mean_f1", 0),
+            "n_samples": len(lab),
+            "n_up": int((lab == 2).sum()),
+            "n_neutral": int((lab == 1).sum()),
+            "n_down": int((lab == 0).sum()),
+        })
+        logger.info(
+            f"  {horizon}d: model={model_result['mean_accuracy']:.4f} "
+            f"persistence={persistence['mean_accuracy']:.4f} lift={lift:+.4f}"
+        )
+
+    df = pd.DataFrame(results)
+    if not df.empty:
+        df.to_csv(RESULTS_DIR / f"multi_horizon_{market_name}.csv", index=False)
+        logger.info(f"Multi-horizon results:\n{df.to_string()}")
+
+    return df
+
+
+def save_key_figures(all_prices: dict, results_dir: Path):
+    """Save publication-quality figures for key findings.
+
+    Only saves visualizations that convey meaningful research insights —
+    not decorative charts.
+    """
+    import plotly.graph_objects as go
+    import plotly.io as pio
+
+    fig_dir = results_dir / "figures"
+    fig_dir.mkdir(exist_ok=True)
+    saved = []
+
+    # --- 1. Multi-horizon: model vs persistence across horizons ---
+    for market in all_prices:
+        mh_path = results_dir / f"multi_horizon_{market}.csv"
+        if not mh_path.exists():
+            continue
+        mh = pd.read_csv(mh_path)
+        if mh.empty:
+            continue
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=[f"{h}d" for h in mh["horizon"]],
+            y=mh["persistence_accuracy"],
+            name="Persistence Baseline",
+            marker_color="#90a4ae",
+        ))
+        fig.add_trace(go.Bar(
+            x=[f"{h}d" for h in mh["horizon"]],
+            y=mh["model_accuracy"],
+            name="Hybrid DC-LLM Model",
+            marker_color="#1976d2",
+        ))
+        # Add lift annotation
+        for i, row in mh.iterrows():
+            lift = row["lift_accuracy"]
+            color = "#4caf50" if lift > 0 else "#f44336"
+            fig.add_annotation(
+                x=f"{int(row['horizon'])}d",
+                y=max(row["model_accuracy"], row["persistence_accuracy"]) + 0.01,
+                text=f"{lift:+.2%}",
+                showarrow=False,
+                font=dict(color=color, size=12, family="Arial Black"),
+            )
+
+        fig.update_layout(
+            title=f"Model vs Persistence Across Horizons — {market}",
+            yaxis_title="Accuracy",
+            xaxis_title="Prediction Horizon",
+            barmode="group",
+            template="plotly_white",
+            height=500, width=800,
+            legend=dict(x=0.02, y=0.98),
+        )
+        path = fig_dir / f"multi_horizon_{market}.png"
+        pio.write_image(fig, str(path), scale=2)
+        saved.append(path.name)
+
+    # --- 2. Label distribution comparison: fixed vs vol-scaled ---
+    for market, prices in all_prices.items():
+        from src.models.feature_engineering import FeatureEngineer
+        engineer = FeatureEngineer(dc_threshold=0.02)
+        fixed_labels = engineer.build_labels(prices, horizon=5, method="direction")
+        vol_labels = engineer.build_labels(prices, horizon=5, method="direction_vol")
+
+        fig = go.Figure()
+        for labels_data, name, colors in [
+            (fixed_labels, "Fixed ±0.5%", ["#ef5350", "#78909c", "#66bb6a"]),
+            (vol_labels, "Vol-Scaled", ["#e53935", "#546e7a", "#43a047"]),
+        ]:
+            counts = labels_data.value_counts().sort_index()
+            total = counts.sum()
+            fig.add_trace(go.Bar(
+                x=["Down", "Neutral", "Up"],
+                y=[counts.get(0, 0) / total, counts.get(1, 0) / total, counts.get(2, 0) / total],
+                name=name,
+                text=[f"{counts.get(c, 0)}" for c in [0, 1, 2]],
+                textposition="outside",
+            ))
+
+        fig.update_layout(
+            title=f"Label Distribution: Fixed vs Volatility-Scaled — {market}",
+            yaxis_title="Proportion",
+            xaxis_title="Label Class",
+            barmode="group",
+            template="plotly_white",
+            height=450, width=700,
+            yaxis=dict(tickformat=".0%"),
+        )
+        path = fig_dir / f"label_distribution_{market}.png"
+        pio.write_image(fig, str(path), scale=2)
+        saved.append(path.name)
+
+    # --- 3. Ablation study: feature group contribution ---
+    for market in all_prices:
+        abl_path = results_dir / f"ablation_{market}.csv"
+        if not abl_path.exists():
+            continue
+        abl = pd.read_csv(abl_path)
+        if abl.empty or "mean_accuracy" not in abl.columns:
+            continue
+
+        abl_sorted = abl.sort_values("mean_accuracy", ascending=True)
+        colors = ["#1976d2" if "all" in g else "#546e7a"
+                  for g in abl_sorted["feature_group"]]
+
+        fig = go.Figure(go.Bar(
+            x=abl_sorted["mean_accuracy"],
+            y=abl_sorted["feature_group"],
+            orientation="h",
+            marker_color=colors,
+            text=[f"{v:.3f}" for v in abl_sorted["mean_accuracy"]],
+            textposition="outside",
+        ))
+        fig.update_layout(
+            title=f"Feature Group Ablation Study — {market}",
+            xaxis_title="Mean Accuracy (CV)",
+            template="plotly_white",
+            height=400, width=700,
+            margin=dict(l=140),
+        )
+        path = fig_dir / f"ablation_{market}.png"
+        pio.write_image(fig, str(path), scale=2)
+        saved.append(path.name)
+
+    # --- 4. Granger causality heatmap ---
+    gc_path = results_dir / "granger_causality.csv"
+    if gc_path.exists():
+        gc = pd.read_csv(gc_path)
+        if not gc.empty and "p_value" in gc.columns:
+            markets_list = sorted(set(gc["source"].tolist() + gc["target"].tolist()))
+            n = len(markets_list)
+            p_matrix = pd.DataFrame(1.0, index=markets_list, columns=markets_list)
+            for _, row in gc.iterrows():
+                p_matrix.loc[row["source"], row["target"]] = row["p_value"]
+
+            # -log10(p) for visual clarity (higher = more significant)
+            import plotly.figure_factory as ff
+            log_p = -np.log10(p_matrix.values.clip(min=1e-50))
+            np.fill_diagonal(log_p, 0)
+
+            fig = go.Figure(go.Heatmap(
+                z=log_p,
+                x=markets_list,
+                y=markets_list,
+                colorscale="YlOrRd",
+                text=[[f"p={p_matrix.iloc[i, j]:.2e}" for j in range(n)] for i in range(n)],
+                texttemplate="%{text}",
+                colorbar=dict(title="-log₁₀(p)"),
+            ))
+            fig.update_layout(
+                title="Granger Causality: Cross-Market Lead-Lag (p-values)",
+                xaxis_title="Target Market (affected)",
+                yaxis_title="Source Market (leads)",
+                template="plotly_white",
+                height=500, width=600,
+            )
+            path = fig_dir / "granger_causality_heatmap.png"
+            pio.write_image(fig, str(path), scale=2)
+            saved.append(path.name)
+
+    # --- 5. Rolling evaluation: performance over time ---
+    for market in all_prices:
+        roll_path = results_dir / f"rolling_eval_{market}.csv"
+        if not roll_path.exists():
+            continue
+        roll = pd.read_csv(roll_path)
+        if roll.empty or "accuracy" not in roll.columns:
+            continue
+
+        fig = go.Figure()
+        if "test_start" in roll.columns:
+            x_vals = pd.to_datetime(roll["test_start"])
+        else:
+            x_vals = list(range(len(roll)))
+
+        fig.add_trace(go.Scatter(
+            x=x_vals, y=roll["accuracy"],
+            mode="lines+markers",
+            name="Accuracy",
+            line=dict(color="#1976d2", width=2),
+        ))
+        if "f1" in roll.columns:
+            fig.add_trace(go.Scatter(
+                x=x_vals, y=roll["f1"],
+                mode="lines+markers",
+                name="F1",
+                line=dict(color="#26a69a", width=2),
+            ))
+
+        fig.update_layout(
+            title=f"Rolling Window Model Performance — {market}",
+            yaxis_title="Score",
+            xaxis_title="Test Window Start",
+            template="plotly_white",
+            height=400, width=800,
+        )
+        path = fig_dir / f"rolling_performance_{market}.png"
+        pio.write_image(fig, str(path), scale=2)
+        saved.append(path.name)
+
+    # --- 6. Model comparison with baselines ---
+    for market in all_prices:
+        base_path = results_dir / f"baselines_{market}.csv"
+        comp_path = results_dir / f"model_comparison_{market}.csv"
+        if not base_path.exists() or not comp_path.exists():
+            continue
+        baselines_df = pd.read_csv(base_path)
+        comp_df = pd.read_csv(comp_path)
+        if baselines_df.empty or comp_df.empty:
+            continue
+
+        # Combine into one chart
+        combined = pd.concat([
+            baselines_df[["model", "mean_accuracy"]],
+            comp_df[["model", "mean_accuracy"]],
+        ], ignore_index=True).sort_values("mean_accuracy", ascending=True)
+
+        colors = []
+        for m in combined["model"]:
+            if m == "persistence":
+                colors.append("#f44336")  # red for key baseline
+            elif m in ["xgboost", "lightgbm", "random_forest", "gradient_boosting"]:
+                colors.append("#1976d2")  # blue for ML models
+            else:
+                colors.append("#90a4ae")  # grey for other baselines
+
+        fig = go.Figure(go.Bar(
+            x=combined["mean_accuracy"],
+            y=combined["model"],
+            orientation="h",
+            marker_color=colors,
+            text=[f"{v:.3f}" for v in combined["mean_accuracy"]],
+            textposition="outside",
+        ))
+        fig.update_layout(
+            title=f"All Models vs Baselines — {market}",
+            xaxis_title="Mean Accuracy",
+            template="plotly_white",
+            height=450, width=750,
+            margin=dict(l=150),
+        )
+        path = fig_dir / f"models_vs_baselines_{market}.png"
+        pio.write_image(fig, str(path), scale=2)
+        saved.append(path.name)
+
+    logger.info(f"Saved {len(saved)} figures to {fig_dir}/")
+    for name in saved:
+        logger.info(f"  → {name}")
 
 
 def main():
@@ -687,6 +1018,7 @@ def main():
         run_extended_model_training(prices, market_events, market, sentiment_df=sent)
         run_dc_sensitivity(prices, market_events, market, sentiment_df=sent)
         run_regime_analysis(prices, market_events, market, sentiment_df=sent)
+        run_multi_horizon_analysis(prices, market_events, market, sentiment_df=sent)
 
     # Cross-market analysis (requires all 3 markets)
     if args.market == "all" and len(all_prices) >= 2:
@@ -715,6 +1047,12 @@ def main():
 
         # Cross-market contagion
         run_cross_market_contagion(all_prices, events)
+
+    # Save key figures for thesis / presentation
+    try:
+        save_key_figures(all_prices, RESULTS_DIR)
+    except Exception as e:
+        logger.warning(f"Figure saving failed (non-critical): {e}")
 
     logger.info("\nAnalysis pipeline complete! Results saved to results/")
 

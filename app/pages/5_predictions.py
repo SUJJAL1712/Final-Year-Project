@@ -146,12 +146,13 @@ def _ensure_features():
         return False
     return True
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "Ablation Study",
     "Extended Ablation (with CIs)",
     "Model Comparison",
     "Baselines",
     "Predictions",
+    "Multi-Horizon",
 ])
 
 with tab1:
@@ -401,3 +402,104 @@ with tab5:
                     predictions.tail(n_show),
                     use_container_width=True,
                 )
+
+with tab6:
+    st.subheader("Multi-Horizon Analysis: Model vs Persistence")
+    st.markdown("""
+    Tests the hybrid model against the persistence baseline across multiple
+    prediction horizons (1, 3, 5, 10 days). Uses **volatility-scaled thresholds**
+    that adapt to market conditions — wider neutral zones in volatile periods,
+    narrower in calm periods.
+
+    **Lift** = model accuracy − persistence accuracy. Positive lift means the model
+    adds value beyond simply predicting "same as yesterday."
+    """)
+
+    mh_path = RESULTS_DIR / f"multi_horizon_{market_name}.csv"
+    mh_data = None
+    if mh_path.exists():
+        try:
+            mh_data = pd.read_csv(mh_path)
+        except Exception:
+            pass
+
+    if mh_data is not None and not mh_data.empty:
+        col1, col2 = st.columns(2)
+
+        with col1:
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                x=[f"{h}d" for h in mh_data["horizon"]],
+                y=mh_data["persistence_accuracy"],
+                name="Persistence",
+                marker_color="#90a4ae",
+            ))
+            fig.add_trace(go.Bar(
+                x=[f"{h}d" for h in mh_data["horizon"]],
+                y=mh_data["model_accuracy"],
+                name="Hybrid Model",
+                marker_color="#1976d2",
+            ))
+            fig.update_layout(
+                title="Accuracy by Horizon",
+                yaxis_title="Accuracy",
+                xaxis_title="Horizon",
+                barmode="group",
+                template="plotly_white",
+                height=400,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col2:
+            # Lift chart
+            colors = ["#4caf50" if l > 0 else "#f44336" for l in mh_data["lift_accuracy"]]
+            fig = go.Figure(go.Bar(
+                x=[f"{h}d" for h in mh_data["horizon"]],
+                y=mh_data["lift_accuracy"],
+                marker_color=colors,
+                text=[f"{l:+.2%}" for l in mh_data["lift_accuracy"]],
+                textposition="outside",
+            ))
+            fig.add_hline(y=0, line_dash="dash", line_color="grey")
+            fig.update_layout(
+                title="Lift Over Persistence",
+                yaxis_title="Accuracy Lift",
+                xaxis_title="Horizon",
+                template="plotly_white",
+                height=400,
+                yaxis=dict(tickformat=".1%"),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Label distribution
+        st.markdown("#### Label Distribution per Horizon")
+        dist_data = []
+        for _, row in mh_data.iterrows():
+            total = row["n_up"] + row["n_neutral"] + row["n_down"]
+            dist_data.append({
+                "Horizon": f"{int(row['horizon'])}d",
+                "Up (%)": f"{row['n_up']/total:.1%}",
+                "Neutral (%)": f"{row['n_neutral']/total:.1%}",
+                "Down (%)": f"{row['n_down']/total:.1%}",
+                "Total": int(total),
+            })
+        st.dataframe(pd.DataFrame(dist_data), use_container_width=True)
+
+        # Full data
+        st.dataframe(mh_data.round(4), use_container_width=True)
+
+        # Interpretation
+        best = mh_data.loc[mh_data["lift_accuracy"].idxmax()]
+        if best["lift_accuracy"] > 0:
+            st.success(
+                f"Best horizon: **{int(best['horizon'])}d** with "
+                f"**{best['lift_accuracy']:+.2%}** lift over persistence "
+                f"(model: {best['model_accuracy']:.2%}, persistence: {best['persistence_accuracy']:.2%})"
+            )
+        else:
+            st.info(
+                "Persistence dominates at all horizons — a legitimate finding. "
+                "Market momentum is strong and hard to beat with fundamental features."
+            )
+    else:
+        st.info("Run `python scripts/run_analysis.py` to generate multi-horizon results.")

@@ -36,12 +36,13 @@ market = st.sidebar.selectbox(
     format_func=lambda x: {"US": "US (S&P 500)", "India": "India (NIFTY 50)", "China": "China (HSI)"}[x],
 )
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "Temporal Holdout",
     "Rolling Evaluation",
     "Model Calibration",
     "Learning Curves",
     "Model Comparison (DM Test)",
+    "Horizon Analysis",
 ])
 
 # ---------------------------------------------------------------------------
@@ -403,3 +404,95 @@ with tab5:
                 pass
         else:
             st.info("Run `python scripts/run_analysis.py` to generate model comparison results.")
+
+# ---------------------------------------------------------------------------
+# Tab 6: Horizon Analysis
+# ---------------------------------------------------------------------------
+with tab6:
+    st.subheader("Prediction Horizon Sensitivity")
+    st.markdown("""
+    How does model performance change with prediction horizon?
+    **Persistence** (predicting "same as yesterday") dominates at short horizons
+    where momentum is strong, but may weaken at longer horizons where mean-reversion
+    or fundamental factors matter more.
+
+    This analysis uses **volatility-scaled label thresholds** — the neutral zone
+    adapts to market conditions so each horizon gets a fair comparison.
+    """)
+
+    mh_path = RESULTS_DIR / f"multi_horizon_{market}.csv"
+    mh_data = None
+    if mh_path.exists():
+        try:
+            mh_data = pd.read_csv(mh_path)
+        except Exception:
+            pass
+
+    if mh_data is not None and not mh_data.empty:
+        # Lift over persistence by horizon
+        fig = go.Figure()
+
+        # Model accuracy line
+        fig.add_trace(go.Scatter(
+            x=mh_data["horizon"],
+            y=mh_data["model_accuracy"],
+            mode="lines+markers",
+            name="Hybrid Model",
+            line=dict(color="#1976d2", width=3),
+            marker=dict(size=10),
+        ))
+
+        # Persistence line
+        fig.add_trace(go.Scatter(
+            x=mh_data["horizon"],
+            y=mh_data["persistence_accuracy"],
+            mode="lines+markers",
+            name="Persistence Baseline",
+            line=dict(color="#f44336", width=3, dash="dash"),
+            marker=dict(size=10),
+        ))
+
+        # Shade lift region
+        fig.add_trace(go.Scatter(
+            x=list(mh_data["horizon"]) + list(mh_data["horizon"][::-1]),
+            y=list(mh_data["model_accuracy"]) + list(mh_data["persistence_accuracy"][::-1]),
+            fill="toself",
+            fillcolor="rgba(25, 118, 210, 0.1)",
+            line=dict(width=0),
+            showlegend=False,
+        ))
+
+        fig.update_layout(
+            title=f"Model vs Persistence by Prediction Horizon — {market}",
+            xaxis_title="Prediction Horizon (days)",
+            yaxis_title="Accuracy",
+            template="plotly_white",
+            height=450,
+            xaxis=dict(tickvals=[1, 3, 5, 10]),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Summary metrics
+        st.markdown("#### Detailed Results")
+        display_df = mh_data.copy()
+        display_df["lift_accuracy"] = display_df["lift_accuracy"].map(lambda x: f"{x:+.4f}")
+        st.dataframe(display_df.round(4), use_container_width=True)
+
+        # Key insight
+        best_idx = mh_data["lift_accuracy"].idxmax()
+        best = mh_data.loc[best_idx]
+        worst_idx = mh_data["lift_accuracy"].idxmin()
+        worst = mh_data.loc[worst_idx]
+
+        if best["lift_accuracy"] > 0:
+            st.success(
+                f"Model shows positive lift at **{int(best['horizon'])}d** horizon: "
+                f"{best['lift_accuracy']:+.2%} over persistence."
+            )
+        st.info(
+            f"Persistence is strongest at **{int(worst['horizon'])}d** horizon "
+            f"({worst['persistence_accuracy']:.2%} accuracy). "
+            f"This is consistent with short-term market momentum."
+        )
+    else:
+        st.info("Run `python scripts/run_analysis.py` to generate multi-horizon results.")

@@ -247,13 +247,34 @@ class FeatureEngineer:
         Args:
             prices: Price series
             horizon: Forward-looking horizon in days
-            method: 'direction' (1/0/-1), 'return' (continuous), or 'dc' (next DC direction)
+            method: 'direction' (fixed ±0.5% thresholds),
+                     'direction_vol' (volatility-scaled thresholds),
+                     'return' (continuous), or 'dc' (next DC direction)
         """
         if method == "direction":
             future_return = prices.pct_change(horizon).shift(-horizon)
             labels = pd.Series(1, index=prices.index)  # 1 = neutral
             labels[future_return > 0.005] = 2   # Up more than 0.5%
             labels[future_return < -0.005] = 0  # Down more than 0.5%
+            return labels.rename("label")
+
+        elif method == "direction_vol":
+            # Volatility-scaled thresholds: neutral zone = 1σ × √horizon
+            # In low-vol periods the threshold shrinks, creating more
+            # directional labels. In high-vol periods it widens, filtering
+            # out noise. This prevents persistence from being trivially
+            # strong just because fixed thresholds are too narrow.
+            daily_returns = prices.pct_change(1)
+            daily_vol = daily_returns.rolling(20).std()
+            threshold = daily_vol * np.sqrt(horizon)
+            # Fallback for first 20 rows where vol is NaN; floor to prevent
+            # near-zero thresholds in extremely calm periods
+            threshold = threshold.fillna(0.005).clip(lower=0.001)
+
+            future_return = prices.pct_change(horizon).shift(-horizon)
+            labels = pd.Series(1, index=prices.index)  # 1 = neutral
+            labels[future_return > threshold] = 2       # up
+            labels[future_return < -threshold] = 0      # down
             return labels.rename("label")
 
         elif method == "return":
