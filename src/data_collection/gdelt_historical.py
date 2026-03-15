@@ -439,7 +439,10 @@ class GDELTHistoricalFetcher:
     for _code, _cat in CONFLICT_ROOT_CODES.items():
         _ROOT_LOOKUP[_code] = ("conflict", _cat)
 
-    def _process_raw(self, raw: pd.DataFrame, event_type_filter: str = "all") -> pd.DataFrame:
+    def _process_raw(
+        self, raw: pd.DataFrame, event_type_filter: str = "all",
+        start_date: str | None = None, end_date: str | None = None,
+    ) -> pd.DataFrame:
         """Process raw GDELT events into our standard event format.
 
         Fully vectorized — uses pandas map/apply on columns instead of
@@ -566,16 +569,18 @@ class GDELTHistoricalFetcher:
 
         result = result.dropna(subset=["date"])
 
-        # Filter to analysis date range — raw GDELT can contain dates outside
+        # Filter to date range — raw GDELT can contain dates outside
         # our window (e.g. 1920-01-01 from malformed Day fields).
-        from src.utils.config import ANALYSIS_START, ANALYSIS_END
-        start_ts = pd.Timestamp(ANALYSIS_START)
-        end_ts = pd.Timestamp(ANALYSIS_END)
+        # Use passed parameters; fall back to global config only as last resort.
+        range_start = start_date or ANALYSIS_START
+        range_end = end_date or ANALYSIS_END
+        start_ts = pd.Timestamp(range_start)
+        end_ts = pd.Timestamp(range_end)
         before = len(result)
         result = result[(result["date"] >= start_ts) & (result["date"] <= end_ts)]
         dropped = before - len(result)
         if dropped > 0:
-            logger.info(f"Filtered {dropped} events outside analysis range [{ANALYSIS_START}, {ANALYSIS_END}]")
+            logger.info(f"Filtered {dropped} events outside range [{range_start}, {range_end}]")
 
         return result
 
@@ -648,8 +653,10 @@ class GDELTHistoricalFetcher:
         end_date = end_date or ANALYSIS_END
 
         # Check combined processed cache
+        # v2: cache key includes logic version to invalidate when processing changes
+        _CACHE_VERSION = "v2"
         cache_key = hashlib.sha256(
-            f"daily|{event_type}|{start_date}|{end_date}".encode()
+            f"daily|{event_type}|{start_date}|{end_date}|{_CACHE_VERSION}".encode()
         ).hexdigest()[:12]
         cache_path = self.cache_dir / f"historical_{cache_key}.csv"
 
@@ -703,7 +710,7 @@ class GDELTHistoricalFetcher:
                 try:
                     df = future.result()
                     if df is not None and not df.empty:
-                        processed = self._process_raw(df, event_type)
+                        processed = self._process_raw(df, event_type, start_date, end_date)
                         day_files_with_data += 1
                         raw_filtered_rows += len(df)
                         if not processed.empty:

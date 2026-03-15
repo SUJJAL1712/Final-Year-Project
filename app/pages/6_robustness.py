@@ -332,14 +332,17 @@ with tab4:
 
             fig = go.Figure()
             labels = event_regimes["regime"].str.replace("event_type_", "").str.capitalize()
+            # Use 'acar' column if available (new schema), fall back to 'mean_accuracy' (old)
+            acar_col = "acar" if "acar" in event_regimes.columns else "mean_accuracy"
+            acar_vals = event_regimes[acar_col]
             fig.add_trace(go.Bar(
                 x=labels,
-                y=event_regimes["mean_accuracy"],  # This is ACAR for event types
+                y=acar_vals,
                 error_y=dict(
                     type="data",
                     symmetric=False,
-                    array=(event_regimes["ci_upper"] - event_regimes["mean_accuracy"]).tolist(),
-                    arrayminus=(event_regimes["mean_accuracy"] - event_regimes["ci_lower"]).tolist(),
+                    array=(event_regimes["ci_upper"] - acar_vals).tolist(),
+                    arrayminus=(acar_vals - event_regimes["ci_lower"]).tolist(),
                 ) if "ci_upper" in event_regimes.columns and not event_regimes["ci_upper"].isna().all() else None,
                 name="ACAR",
                 marker_color=["#ff9800", "#f44336"][:len(event_regimes)],
