@@ -123,34 +123,28 @@ def load_and_build_features(sym, threshold, horizon):
     return features, labels, prices
 
 
-# Build features
-with st.spinner("Building feature matrix..."):
-    try:
-        result = load_and_build_features(
-            market_symbol, dc_threshold, prediction_horizon
-        )
-        features, labels, prices = result
-    except Exception as e:
-        st.error(f"Error: {e}")
-        st.stop()
+# Lazy feature loading — only build when a fallback button is clicked
+features, labels, prices = None, None, None
 
-if features is None or labels is None:
-    st.warning("Could not build features. Check data availability.")
-    st.stop()
 
-# Show LLM feature status
-has_llm = any("llm_" in c for c in features.columns)
-if has_llm:
-    st.info("LLM sentiment features are included in the model.")
-else:
-    st.warning(
-        "LLM sentiment features not available. "
-        "Run `python scripts/collect_data.py --sentiment` to generate them."
-    )
-
-st.success(
-    f"Feature matrix: {features.shape[0]} samples x {features.shape[1]} features"
-)
+def _ensure_features():
+    """Build features on demand (cached by Streamlit)."""
+    global features, labels, prices
+    if features is not None:
+        return True
+    with st.spinner("Building feature matrix..."):
+        try:
+            result = load_and_build_features(
+                market_symbol, dc_threshold, prediction_horizon
+            )
+            features, labels, prices = result
+        except Exception as e:
+            st.error(f"Error: {e}")
+            return False
+    if features is None or labels is None:
+        st.warning("Could not build features. Check data availability.")
+        return False
+    return True
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Ablation Study",
@@ -182,15 +176,16 @@ with tab1:
         st.plotly_chart(fig, use_container_width=True)
         st.dataframe(ablation_data.round(4), use_container_width=True)
     elif st.button("Run Ablation Study", type="primary"):
-        with st.spinner("Running ablation study (this may take a minute)..."):
-            model = HybridDCLLMPredictor()
-            ablation_data = model.run_ablation_study(features, labels, model_choice)
+        if _ensure_features():
+            with st.spinner("Running ablation study (this may take a minute)..."):
+                model = HybridDCLLMPredictor()
+                ablation_data = model.run_ablation_study(features, labels, model_choice)
 
-        if not ablation_data.empty:
-            viz = DCVisualizer()
-            fig = viz.plot_ablation_results(ablation_data)
-            st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(ablation_data.round(4), use_container_width=True)
+            if not ablation_data.empty:
+                viz = DCVisualizer()
+                fig = viz.plot_ablation_results(ablation_data)
+                st.plotly_chart(fig, use_container_width=True)
+                st.dataframe(ablation_data.round(4), use_container_width=True)
 
 with tab2:
     st.subheader("Extended Ablation with 95% Confidence Intervals")
@@ -277,10 +272,11 @@ with tab3:
     if comp_data is not None and not comp_data.empty:
         st.dataframe(comp_data.round(4), use_container_width=True)
     elif st.button("Compare All Models"):
-        with st.spinner("Evaluating models..."):
-            model = HybridDCLLMPredictor()
-            comp_data = model.model_comparison(features, labels)
-        st.dataframe(comp_data.round(4), use_container_width=True)
+        if _ensure_features():
+            with st.spinner("Evaluating models..."):
+                model = HybridDCLLMPredictor()
+                comp_data = model.model_comparison(features, labels)
+            st.dataframe(comp_data.round(4), use_container_width=True)
 
 with tab4:
     st.subheader("Baseline Comparison")
@@ -339,10 +335,11 @@ with tab4:
         st.dataframe(baseline_data.round(4), use_container_width=True)
     else:
         if st.button("Run Baselines"):
-            with st.spinner("Running baselines..."):
-                baselines = BaselineModels()
-                baseline_data = baselines.run_all_baselines(prices, labels)
-            st.dataframe(baseline_data.round(4), use_container_width=True)
+            if _ensure_features():
+                with st.spinner("Running baselines..."):
+                    baselines = BaselineModels()
+                    baseline_data = baselines.run_all_baselines(prices, labels)
+                st.dataframe(baseline_data.round(4), use_container_width=True)
 
 with tab5:
     st.subheader("Final Predictions")
@@ -362,21 +359,22 @@ with tab5:
             acc = predictions["correct"].mean()
             st.metric("Test Accuracy", f"{acc:.2%}")
 
-        # Feature importance from precomputed results
-        st.subheader("Top Features")
-        model = HybridDCLLMPredictor()
-        try:
-            result = model.train_and_evaluate(
-                features, labels, model_name=model_choice
-            )
-            if "top_features" in result:
-                heatmap_viz = HeatmapVisualizer()
-                fig = heatmap_viz.plot_feature_importance(
-                    result["top_features"]
-                )
-                st.plotly_chart(fig, use_container_width=True)
-        except Exception:
-            pass
+        # Feature importance (requires building features — offer as button)
+        if st.button("Show Feature Importance", key="feat_imp"):
+            if _ensure_features():
+                model = HybridDCLLMPredictor()
+                try:
+                    result = model.train_and_evaluate(
+                        features, labels, model_name=model_choice
+                    )
+                    if "top_features" in result:
+                        heatmap_viz = HeatmapVisualizer()
+                        fig = heatmap_viz.plot_feature_importance(
+                            result["top_features"]
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                except Exception:
+                    pass
 
         # Prediction timeline
         st.subheader("Prediction Results Over Time")
@@ -386,32 +384,20 @@ with tab5:
             use_container_width=True,
         )
     elif st.button("Generate Predictions"):
-        with st.spinner("Training final model..."):
-            model = HybridDCLLMPredictor()
-            predictions = model.get_final_predictions(
-                features, labels, model_choice
-            )
-
-        if not predictions.empty:
-            acc = (predictions["correct"]).mean()
-            st.metric("Test Accuracy", f"{acc:.2%}")
-
-            # Feature importance
-            st.subheader("Top Features")
-            result = model.train_and_evaluate(
-                features, labels, model_name=model_choice
-            )
-            if "top_features" in result:
-                heatmap_viz = HeatmapVisualizer()
-                fig = heatmap_viz.plot_feature_importance(
-                    result["top_features"]
+        if _ensure_features():
+            with st.spinner("Training final model..."):
+                model = HybridDCLLMPredictor()
+                predictions = model.get_final_predictions(
+                    features, labels, model_choice
                 )
-                st.plotly_chart(fig, use_container_width=True)
 
-            # Prediction timeline
-            st.subheader("Prediction Results Over Time")
-            n_show = min(50, len(predictions))
-            st.dataframe(
-                predictions.tail(n_show),
-                use_container_width=True,
-            )
+            if not predictions.empty:
+                acc = (predictions["correct"]).mean()
+                st.metric("Test Accuracy", f"{acc:.2%}")
+
+                st.subheader("Prediction Results Over Time")
+                n_show = min(50, len(predictions))
+                st.dataframe(
+                    predictions.tail(n_show),
+                    use_container_width=True,
+                )
