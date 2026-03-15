@@ -61,12 +61,12 @@ class StockDataFetcher:
             try:
                 cache_start = cached.index.min()
                 cache_end = cached.index.max()
-                # Accept cache if within 5 days of requested end (weekends/holidays)
-                if cache_start <= pd.Timestamp(start) and cache_end >= pd.Timestamp(end) - pd.Timedelta(days=5):
+                # Accept cache if within 5 days of requested start/end (weekends/holidays)
+                if cache_start <= pd.Timestamp(start) + pd.Timedelta(days=5) and cache_end >= pd.Timestamp(end) - pd.Timedelta(days=5):
                     logger.info(f"Using cached stock data for {symbol}")
                     return cached
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Cache check failed for {symbol}: {e}")
 
         last_error = None
         for attempt in range(1, self.max_retries + 1):
