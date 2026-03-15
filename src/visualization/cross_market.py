@@ -36,18 +36,17 @@ class CrossMarketVisualizer:
                 )
             )
 
-        if events_df is not None:
-            for _, event in events_df.iterrows():
-                severity = event.get("severity", 5)
-                if severity >= 7:
-                    event_dt = pd.Timestamp(event["date"])
-                    fig.add_shape(
-                        type="line",
-                        x0=event_dt, x1=event_dt,
-                        y0=0, y1=1,
-                        yref="paper",
-                        line=dict(dash="dash", color="rgba(0,0,0,0.3)", width=1),
-                    )
+        if events_df is not None and not events_df.empty:
+            top_events = events_df.nlargest(20, "severity") if "severity" in events_df.columns else events_df.head(20)
+            for _, event in top_events.iterrows():
+                event_dt = pd.Timestamp(event["date"])
+                fig.add_shape(
+                    type="line",
+                    x0=event_dt, x1=event_dt,
+                    y0=0, y1=1,
+                    yref="paper",
+                    line=dict(dash="dash", color="rgba(0,0,0,0.3)", width=1),
+                )
 
         fig.update_layout(
             title=title,

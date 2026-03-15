@@ -104,55 +104,69 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 with tab1:
     st.subheader("Event Study: Abnormal Returns")
 
-    if len(event_dates) > 0:
-        analyzer = EventStudyAnalyzer()
-        acar_result = analyzer.average_car(prices, event_dates)
+    # Try precomputed extended results first (avoids live computation on 4000 events)
+    ext_es_path = RESULTS_DIR / f"event_study_extended_{market_name}.csv"
+    basic_es_path = RESULTS_DIR / f"event_study_{market_name}.csv"
+    precomputed_ext = None
+    precomputed_basic = None
 
-        if "error" not in acar_result:
-            viz = EventTimelineVisualizer()
-            fig = viz.plot_event_study_results(
-                acar_result["acar"],
-                acar_result["acar_std"],
-                acar_result["n_events"],
-                f"Average CAR: {market}",
+    if ext_es_path.exists():
+        try:
+            precomputed_ext = pd.read_csv(ext_es_path)
+        except Exception:
+            pass
+    if basic_es_path.exists():
+        try:
+            precomputed_basic = pd.read_csv(basic_es_path)
+        except Exception:
+            pass
+
+    if precomputed_ext is not None and not precomputed_ext.empty:
+        # Derive summary stats from precomputed per-event results
+        n_events = len(precomputed_ext)
+        mean_car = precomputed_ext["total_car"].mean()
+        n_sig = precomputed_ext["significant"].sum() if "significant" in precomputed_ext.columns else 0
+        mean_effect = precomputed_ext["event_day_ar"].mean() if "event_day_ar" in precomputed_ext.columns else 0
+
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Events Analyzed", n_events)
+        col2.metric("Mean CAR", f"{mean_car:.6f}")
+        col3.metric("Mean Event-Day AR", f"{mean_effect:.6f}")
+        col4.metric("Significant Events", f"{int(n_sig)} / {n_events}")
+
+        st.caption("Using precomputed results from analysis pipeline.")
+
+        # Show individual event results
+        display_data = precomputed_ext if precomputed_basic is None else precomputed_basic
+        with st.expander("Individual Event Results"):
+            st.dataframe(
+                display_data.sort_values("event_date", ascending=False),
+                use_container_width=True,
             )
-            st.plotly_chart(fig, use_container_width=True)
+    elif len(event_dates) > 0:
+        if st.button("Run Event Study (may take a few minutes)", type="primary", key="event_study_run"):
+            with st.spinner("Running event study on all events..."):
+                analyzer = EventStudyAnalyzer()
+                acar_result = analyzer.average_car(prices, event_dates)
 
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Events Analyzed", acar_result["n_events"])
-            acar_val = acar_result["acar"].iloc[-1]
-            col2.metric("Total ACAR", f"{acar_val:.4f}")
-            acar_series = acar_result["acar"]
-            col3.metric(
-                "Event Day ACAR",
-                f"{acar_series.iloc[10]:.4f}" if len(acar_series) > 10 else "N/A",
-            )
-            # Show CI if available
-            if "acar_ci_lower" in acar_result and "acar_ci_upper" in acar_result:
-                ci_low = acar_result["acar_ci_lower"]
-                ci_high = acar_result["acar_ci_upper"]
-                col4.metric("95% CI", f"[{ci_low:.4f}, {ci_high:.4f}]")
-
-            # Individual event results — try precomputed first
-            multi_results = None
-            es_path = RESULTS_DIR / f"event_study_{market_name}.csv"
-            if es_path.exists():
-                try:
-                    multi_results = pd.read_csv(es_path)
-                except Exception:
-                    multi_results = None
-
-            if multi_results is None:
-                multi_results = analyzer.multi_event_study(prices, event_dates)
-
-            if not multi_results.empty:
-                with st.expander("Individual Event Results"):
-                    st.dataframe(
-                        multi_results.sort_values("event_date", ascending=False),
-                        use_container_width=True,
+                if "error" not in acar_result:
+                    viz = EventTimelineVisualizer()
+                    fig = viz.plot_event_study_results(
+                        acar_result["acar"],
+                        acar_result["acar_std"],
+                        acar_result["n_events"],
+                        f"Average CAR: {market}",
                     )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Events Analyzed", acar_result["n_events"])
+                    col2.metric("Total ACAR", f"{acar_result['acar'].iloc[-1]:.4f}")
+                    col3.metric("Significant Events", acar_result.get("n_significant", "N/A"))
+                else:
+                    st.warning("Insufficient data for event study.")
         else:
-            st.warning("Insufficient data for event study.")
+            st.info("Run `python scripts/run_analysis.py` to generate precomputed results, or click the button above.")
     else:
         st.info(f"No events to analyze for {market} with current filters.")
 
@@ -306,53 +320,56 @@ with tab3:
 with tab4:
     st.subheader("DC-Event Temporal Coincidence")
 
-    correlator = DCEventCorrelator(dc_threshold)
-
     if event_dates:
-        coincidence = correlator.temporal_coincidence(prices, event_dates)
+        if st.button("Run DC-Event Correlation Analysis", type="primary", key="dc_corr"):
+            correlator = DCEventCorrelator(dc_threshold)
+            with st.spinner("Computing DC-event correlation..."):
+                coincidence = correlator.temporal_coincidence(prices, event_dates)
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("DC Events Near Geo Events", coincidence["coincident_dc_events"])
-        col2.metric("Expected (Random)", f"{coincidence['expected_dc_events']:.1f}")
-        col3.metric("Enrichment Ratio", f"{coincidence['enrichment_ratio']:.2f}x")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("DC Events Near Geo Events", coincidence["coincident_dc_events"])
+            col2.metric("Expected (Random)", f"{coincidence['expected_dc_events']:.1f}")
+            col3.metric("Enrichment Ratio", f"{coincidence['enrichment_ratio']:.2f}x")
 
-        if coincidence["significant"]:
-            st.success(f"Significant clustering (p={coincidence['p_value']:.4f})")
+            if coincidence["significant"]:
+                st.success(f"Significant clustering (p={coincidence['p_value']:.4f})")
+            else:
+                st.info(f"Not significant (p={coincidence['p_value']:.4f})")
+
+            # Magnitude comparison
+            st.subheader("DC Magnitude: Event vs Normal Periods")
+            magnitude_comp = correlator.dc_magnitude_around_events(prices, event_dates)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Near Events Avg |Magnitude|",
+                           f"{magnitude_comp['near_event_avg_magnitude']:.4f}")
+                st.metric("Normal Period Avg |Magnitude|",
+                           f"{magnitude_comp['normal_avg_magnitude']:.4f}")
+            with col2:
+                st.metric("Near Events Avg OS Ratio",
+                           f"{magnitude_comp['near_event_avg_os_ratio']:.3f}")
+                st.metric("Normal Period Avg OS Ratio",
+                           f"{magnitude_comp['normal_avg_os_ratio']:.3f}")
+
+            # Magnitude comparison bar chart
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                x=["Near Events", "Normal Periods"],
+                y=[magnitude_comp["near_event_avg_magnitude"],
+                   magnitude_comp["normal_avg_magnitude"]],
+                marker_color=["#c62828", "#607d8b"],
+                name="Avg |Magnitude|",
+            ))
+            fig.update_layout(
+                title="DC Magnitude: Event vs Normal Periods",
+                yaxis_title="Average |DC Magnitude|",
+                template="plotly_white",
+                height=350,
+            )
+            st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info(f"Not significant (p={coincidence['p_value']:.4f})")
-
-        # Magnitude comparison
-        st.subheader("DC Magnitude: Event vs Normal Periods")
-        magnitude_comp = correlator.dc_magnitude_around_events(prices, event_dates)
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Near Events Avg |Magnitude|",
-                       f"{magnitude_comp['near_event_avg_magnitude']:.4f}")
-            st.metric("Normal Period Avg |Magnitude|",
-                       f"{magnitude_comp['normal_avg_magnitude']:.4f}")
-        with col2:
-            st.metric("Near Events Avg OS Ratio",
-                       f"{magnitude_comp['near_event_avg_os_ratio']:.3f}")
-            st.metric("Normal Period Avg OS Ratio",
-                       f"{magnitude_comp['normal_avg_os_ratio']:.3f}")
-
-        # Magnitude comparison bar chart
-        fig = go.Figure()
-        fig.add_trace(go.Bar(
-            x=["Near Events", "Normal Periods"],
-            y=[magnitude_comp["near_event_avg_magnitude"],
-               magnitude_comp["normal_avg_magnitude"]],
-            marker_color=["#c62828", "#607d8b"],
-            name="Avg |Magnitude|",
-        ))
-        fig.update_layout(
-            title="DC Magnitude: Event vs Normal Periods",
-            yaxis_title="Average |DC Magnitude|",
-            template="plotly_white",
-            height=350,
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            st.info("Click the button to run DC-event correlation analysis.")
 
 with tab5:
     st.subheader("Event Database")
