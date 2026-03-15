@@ -933,6 +933,392 @@ def save_key_figures(all_prices: dict, results_dir: Path):
         pio.write_image(fig, str(path), scale=2)
         saved.append(path.name)
 
+    # --- 7. DC Scaling Laws (log-log verification) ---
+    for market in all_prices:
+        sl_path = results_dir / f"scaling_laws_{market}.csv"
+        if not sl_path.exists():
+            continue
+        sl = pd.read_csv(sl_path)
+        if sl.empty or "threshold" not in sl.columns:
+            continue
+
+        from plotly.subplots import make_subplots
+        metrics = [
+            ("num_dc_events", "# DC Events", "#1976d2"),
+            ("avg_overshoot_ratio", "Avg Overshoot Ratio", "#e65100"),
+            ("avg_dc_duration_days", "Avg DC Duration (days)", "#2e7d32"),
+        ]
+        available = [(col, title, c) for col, title, c in metrics if col in sl.columns]
+        if not available:
+            continue
+
+        fig = make_subplots(
+            rows=1, cols=len(available),
+            subplot_titles=[t for _, t, _ in available],
+        )
+        for i, (col, title, color) in enumerate(available, 1):
+            fig.add_trace(go.Scatter(
+                x=np.log10(sl["threshold"]),
+                y=np.log10(sl[col].clip(lower=1e-10)),
+                mode="lines+markers",
+                name=title,
+                line=dict(color=color, width=2),
+                marker=dict(size=8),
+            ), row=1, col=i)
+            fig.update_xaxes(title_text="log₁₀(θ)", row=1, col=i)
+            fig.update_yaxes(title_text=f"log₁₀({col})", row=1, col=i)
+
+        fig.update_layout(
+            title=f"DC Scaling Laws Verification — {market}",
+            template="plotly_white",
+            height=400, width=300 * len(available),
+            showlegend=False,
+        )
+        path = fig_dir / f"scaling_laws_{market}.png"
+        pio.write_image(fig, str(path), scale=2)
+        saved.append(path.name)
+
+    # --- 8. Event Study: ACAR with confidence bands ---
+    for market in all_prices:
+        es_path = results_dir / f"event_study_extended_{market}.csv"
+        if not es_path.exists():
+            es_path = results_dir / f"event_study_{market}.csv"
+        if not es_path.exists():
+            continue
+        es = pd.read_csv(es_path)
+        if es.empty:
+            continue
+
+        # Try to build ACAR from individual events
+        car_cols = [c for c in es.columns if c.startswith("car_day_") or c == "total_car"]
+        if "total_car" in es.columns:
+            fig = go.Figure()
+            # Histogram of CARs
+            fig.add_trace(go.Histogram(
+                x=es["total_car"],
+                nbinsx=30,
+                name="CAR Distribution",
+                marker_color="#1976d2",
+                opacity=0.7,
+            ))
+            mean_car = es["total_car"].mean()
+            fig.add_vline(x=mean_car, line_dash="dash", line_color="red",
+                          annotation_text=f"Mean CAR: {mean_car:.4f}")
+            fig.add_vline(x=0, line_dash="solid", line_color="grey")
+
+            sig_count = es["significant"].sum() if "significant" in es.columns else "N/A"
+            fig.update_layout(
+                title=f"Event Study: Distribution of CARs — {market} (n={len(es)}, significant={sig_count})",
+                xaxis_title="Cumulative Abnormal Return",
+                yaxis_title="Count",
+                template="plotly_white",
+                height=450, width=700,
+            )
+            path = fig_dir / f"event_study_car_dist_{market}.png"
+            pio.write_image(fig, str(path), scale=2)
+            saved.append(path.name)
+
+        # Effect sizes if available
+        if "cohens_d" in es.columns:
+            fig = go.Figure()
+            d_vals = es["cohens_d"].dropna()
+            fig.add_trace(go.Histogram(
+                x=d_vals, nbinsx=25,
+                marker_color="#e65100", opacity=0.7,
+                name="Cohen's d",
+            ))
+            fig.add_vline(x=0.2, line_dash="dash", line_color="#4caf50",
+                          annotation_text="Small (0.2)")
+            fig.add_vline(x=0.5, line_dash="dash", line_color="#ff9800",
+                          annotation_text="Medium (0.5)")
+            fig.add_vline(x=0.8, line_dash="dash", line_color="#f44336",
+                          annotation_text="Large (0.8)")
+            fig.update_layout(
+                title=f"Event Study: Effect Sizes (Cohen's d) — {market}",
+                xaxis_title="Cohen's d",
+                yaxis_title="Count",
+                template="plotly_white",
+                height=400, width=700,
+            )
+            path = fig_dir / f"effect_sizes_{market}.png"
+            pio.write_image(fig, str(path), scale=2)
+            saved.append(path.name)
+
+    # --- 9. Placebo test: real vs placebo distribution ---
+    for market in all_prices:
+        pl_path = results_dir / f"placebo_test_{market}.csv"
+        if not pl_path.exists():
+            continue
+        pl = pd.read_csv(pl_path)
+        if pl.empty:
+            continue
+
+        if "placebo_cars" in pl.columns:
+            placebo_vals = pl["placebo_cars"].dropna()
+        elif "placebo_mean" in pl.columns and "placebo_std" in pl.columns:
+            # Simulate distribution from summary stats
+            pmean = pl["placebo_mean"].iloc[0]
+            pstd = pl["placebo_std"].iloc[0]
+            placebo_vals = np.random.normal(pmean, pstd, 500)
+        else:
+            continue
+
+        real_acar = pl["real_acar"].iloc[0] if "real_acar" in pl.columns else None
+        emp_p = pl["empirical_p_value"].iloc[0] if "empirical_p_value" in pl.columns else None
+
+        fig = go.Figure()
+        fig.add_trace(go.Histogram(
+            x=placebo_vals, nbinsx=30,
+            marker_color="#90a4ae", opacity=0.7,
+            name="Placebo CARs",
+        ))
+        if real_acar is not None:
+            fig.add_vline(x=real_acar, line_dash="solid", line_color="#f44336",
+                          annotation_text=f"Real ACAR: {real_acar:.4f}")
+
+        title = f"Placebo Test — {market}"
+        if emp_p is not None:
+            title += f" (p={emp_p:.4f})"
+        fig.update_layout(
+            title=title,
+            xaxis_title="Average CAR",
+            yaxis_title="Count (500 placebos)",
+            template="plotly_white",
+            height=400, width=700,
+        )
+        path = fig_dir / f"placebo_test_{market}.png"
+        pio.write_image(fig, str(path), scale=2)
+        saved.append(path.name)
+
+    # --- 10. DC Sensitivity: accuracy vs threshold ---
+    for market in all_prices:
+        dcs_path = results_dir / f"dc_sensitivity_{market}.csv"
+        if not dcs_path.exists():
+            continue
+        dcs = pd.read_csv(dcs_path)
+        if dcs.empty or "theta" not in dcs.columns:
+            continue
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=dcs["theta"], y=dcs["mean_accuracy"],
+            mode="lines+markers",
+            name="Accuracy",
+            line=dict(color="#1976d2", width=3),
+            marker=dict(size=10),
+            error_y=dict(
+                type="data",
+                symmetric=False,
+                array=(dcs["ci_upper"] - dcs["mean_accuracy"]).tolist(),
+                arrayminus=(dcs["mean_accuracy"] - dcs["ci_lower"]).tolist(),
+            ) if "ci_lower" in dcs.columns and "ci_upper" in dcs.columns else None,
+        ))
+        fig.update_layout(
+            title=f"DC Feature Sensitivity to Threshold — {market}",
+            xaxis_title="DC Threshold (θ)",
+            yaxis_title="Accuracy (with 95% CI)",
+            template="plotly_white",
+            height=400, width=600,
+            xaxis=dict(type="log"),
+        )
+        path = fig_dir / f"dc_sensitivity_{market}.png"
+        pio.write_image(fig, str(path), scale=2)
+        saved.append(path.name)
+
+    # --- 11. Learning curves ---
+    for market in all_prices:
+        lc_path = results_dir / f"learning_curves_{market}.csv"
+        if not lc_path.exists():
+            continue
+        lc = pd.read_csv(lc_path)
+        if lc.empty or "accuracy" not in lc.columns:
+            continue
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=lc["fraction"] if "fraction" in lc.columns else list(range(len(lc))),
+            y=lc["accuracy"],
+            mode="lines+markers",
+            name="Accuracy",
+            line=dict(color="#1976d2", width=3),
+            marker=dict(size=10),
+        ))
+        if "f1" in lc.columns:
+            fig.add_trace(go.Scatter(
+                x=lc["fraction"] if "fraction" in lc.columns else list(range(len(lc))),
+                y=lc["f1"],
+                mode="lines+markers",
+                name="F1",
+                line=dict(color="#26a69a", width=3),
+                marker=dict(size=10),
+            ))
+        fig.update_layout(
+            title=f"Learning Curves — {market}",
+            xaxis_title="Training Data Fraction",
+            yaxis_title="Score",
+            template="plotly_white",
+            height=400, width=600,
+            xaxis=dict(tickformat=".0%") if "fraction" in lc.columns else {},
+        )
+        path = fig_dir / f"learning_curves_{market}.png"
+        pio.write_image(fig, str(path), scale=2)
+        saved.append(path.name)
+
+    # --- 12. Regime analysis: pre/post COVID + event types ---
+    for market in all_prices:
+        reg_path = results_dir / f"regime_analysis_{market}.csv"
+        if not reg_path.exists():
+            continue
+        reg = pd.read_csv(reg_path)
+        if reg.empty:
+            continue
+
+        # Split into period regimes and event regimes
+        period_regimes = reg[~reg["regime"].str.startswith("event_type_")]
+        event_regimes = reg[reg["regime"].str.startswith("event_type_")]
+
+        if not period_regimes.empty and "mean_accuracy" in period_regimes.columns:
+            fig = go.Figure()
+            pr = period_regimes.dropna(subset=["mean_accuracy"])
+            if not pr.empty:
+                fig.add_trace(go.Bar(
+                    x=pr["regime"],
+                    y=pr["mean_accuracy"],
+                    marker_color=["#1976d2", "#e65100", "#2e7d32"][:len(pr)],
+                    text=[f"{v:.3f}" for v in pr["mean_accuracy"]],
+                    textposition="outside",
+                ))
+                fig.update_layout(
+                    title=f"Model Accuracy by Regime — {market}",
+                    yaxis_title="Accuracy",
+                    template="plotly_white",
+                    height=400, width=600,
+                )
+                path = fig_dir / f"regime_analysis_{market}.png"
+                pio.write_image(fig, str(path), scale=2)
+                saved.append(path.name)
+
+    # --- 13. Spillover matrix heatmap ---
+    spill_path = results_dir / "spillover_matrix.csv"
+    if spill_path.exists():
+        spill = pd.read_csv(spill_path)
+        if not spill.empty:
+            # Try to reshape into a matrix
+            if "source" in spill.columns and "target" in spill.columns and "mean_correlation" in spill.columns:
+                markets_list = sorted(set(spill["source"].tolist() + spill["target"].tolist()))
+                n = len(markets_list)
+                corr_matrix = pd.DataFrame(0.0, index=markets_list, columns=markets_list)
+                for _, row in spill.iterrows():
+                    corr_matrix.loc[row["source"], row["target"]] = row["mean_correlation"]
+
+                fig = go.Figure(go.Heatmap(
+                    z=corr_matrix.values,
+                    x=markets_list, y=markets_list,
+                    colorscale="RdBu_r",
+                    zmid=0,
+                    text=[[f"{corr_matrix.iloc[i, j]:.3f}" for j in range(n)] for i in range(n)],
+                    texttemplate="%{text}",
+                    colorbar=dict(title="Correlation"),
+                ))
+                fig.update_layout(
+                    title="Cross-Market Spillover Correlation Matrix",
+                    template="plotly_white",
+                    height=500, width=600,
+                )
+                path = fig_dir / "spillover_heatmap.png"
+                pio.write_image(fig, str(path), scale=2)
+                saved.append(path.name)
+
+    # --- 14. Temporal holdout: CV vs out-of-sample ---
+    for market in all_prices:
+        th_path = results_dir / f"temporal_holdout_{market}.csv"
+        comp_path = results_dir / f"model_comparison_{market}.csv"
+        if not th_path.exists():
+            continue
+        th = pd.read_csv(th_path)
+        if th.empty or "accuracy" not in th.columns:
+            continue
+
+        cv_acc = None
+        if comp_path.exists():
+            comp = pd.read_csv(comp_path)
+            if not comp.empty and "mean_accuracy" in comp.columns:
+                cv_acc = comp["mean_accuracy"].max()
+
+        fig = go.Figure()
+        bars = ["Out-of-Sample\n(2023+)"]
+        vals = [th["accuracy"].iloc[0]]
+        colors = ["#e65100"]
+
+        if cv_acc is not None:
+            bars.insert(0, "Cross-Validation\n(2015-2025)")
+            vals.insert(0, cv_acc)
+            colors.insert(0, "#1976d2")
+
+        fig.add_trace(go.Bar(
+            x=bars, y=vals,
+            marker_color=colors,
+            text=[f"{v:.3f}" for v in vals],
+            textposition="outside",
+        ))
+
+        if cv_acc and th["accuracy"].iloc[0]:
+            gap = cv_acc - th["accuracy"].iloc[0]
+            fig.add_annotation(
+                x=0.5, y=max(vals) + 0.02,
+                text=f"Gap: {gap:+.3f}" + (" ⚠️ overfitting" if gap > 0.03 else " ✓ stable"),
+                showarrow=False,
+                font=dict(size=13),
+                xref="paper",
+            )
+
+        fig.update_layout(
+            title=f"CV vs Out-of-Sample Performance — {market}",
+            yaxis_title="Accuracy",
+            template="plotly_white",
+            height=400, width=500,
+        )
+        path = fig_dir / f"temporal_holdout_{market}.png"
+        pio.write_image(fig, str(path), scale=2)
+        saved.append(path.name)
+
+    # --- 15. Extended Granger with BH correction ---
+    gc_ext_path = results_dir / "granger_causality_extended.csv"
+    if gc_ext_path.exists():
+        gc_ext = pd.read_csv(gc_ext_path)
+        if not gc_ext.empty and "p_value_adjusted" in gc_ext.columns:
+            markets_list = sorted(set(gc_ext["source"].tolist() + gc_ext["target"].tolist()))
+            n = len(markets_list)
+            p_matrix = pd.DataFrame(1.0, index=markets_list, columns=markets_list)
+            sig_matrix = pd.DataFrame("", index=markets_list, columns=markets_list)
+            for _, row in gc_ext.iterrows():
+                p_adj = row["p_value_adjusted"]
+                p_matrix.loc[row["source"], row["target"]] = p_adj
+                sig_matrix.loc[row["source"], row["target"]] = "***" if p_adj < 0.001 else "**" if p_adj < 0.01 else "*" if p_adj < 0.05 else "ns"
+
+            log_p = -np.log10(p_matrix.values.clip(min=1e-50))
+            np.fill_diagonal(log_p, 0)
+
+            text = [[f"p={p_matrix.iloc[i, j]:.2e}\n{sig_matrix.iloc[i, j]}"
+                     for j in range(n)] for i in range(n)]
+
+            fig = go.Figure(go.Heatmap(
+                z=log_p, x=markets_list, y=markets_list,
+                colorscale="YlOrRd",
+                text=text, texttemplate="%{text}",
+                colorbar=dict(title="-log₁₀(p_adj)"),
+            ))
+            fig.update_layout(
+                title="Granger Causality (BH-Corrected): Cross-Market Lead-Lag",
+                xaxis_title="Target (affected)",
+                yaxis_title="Source (leads)",
+                template="plotly_white",
+                height=500, width=600,
+            )
+            path = fig_dir / "granger_bh_corrected.png"
+            pio.write_image(fig, str(path), scale=2)
+            saved.append(path.name)
+
     logger.info(f"Saved {len(saved)} figures to {fig_dir}/")
     for name in saved:
         logger.info(f"  → {name}")
