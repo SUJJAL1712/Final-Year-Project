@@ -40,12 +40,13 @@ class CrossMarketVisualizer:
             for _, event in events_df.iterrows():
                 severity = event.get("severity", 5)
                 if severity >= 7:
-                    fig.add_vline(
-                        x=pd.Timestamp(event["date"]),
-                        line_dash="dash",
-                        line_color="rgba(0,0,0,0.3)",
-                        annotation_text=event["event"][:25],
-                        annotation_font_size=8,
+                    event_dt = pd.Timestamp(event["date"])
+                    fig.add_shape(
+                        type="line",
+                        x0=event_dt, x1=event_dt,
+                        y0=0, y1=1,
+                        yref="paper",
+                        line=dict(dash="dash", color="rgba(0,0,0,0.3)", width=1),
                     )
 
         fig.update_layout(

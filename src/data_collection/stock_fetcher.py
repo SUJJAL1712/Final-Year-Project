@@ -59,10 +59,12 @@ class StockDataFetcher:
         cached = self.load_cached(symbol)
         if cached is not None and not cached.empty:
             try:
-                cache_start = cached.index.min()
-                cache_end = cached.index.max()
+                cache_start = cached.index.min().tz_localize(None) if hasattr(cached.index.min(), 'tz') and cached.index.min().tz else cached.index.min()
+                cache_end = cached.index.max().tz_localize(None) if hasattr(cached.index.max(), 'tz') and cached.index.max().tz else cached.index.max()
+                req_start = pd.Timestamp(start).tz_localize(None) if pd.Timestamp(start).tz else pd.Timestamp(start)
+                req_end = pd.Timestamp(end).tz_localize(None) if pd.Timestamp(end).tz else pd.Timestamp(end)
                 # Accept cache if within 5 days of requested start/end (weekends/holidays)
-                if cache_start <= pd.Timestamp(start) + pd.Timedelta(days=5) and cache_end >= pd.Timestamp(end) - pd.Timedelta(days=5):
+                if cache_start <= req_start + pd.Timedelta(days=5) and cache_end >= req_end - pd.Timedelta(days=5):
                     logger.info(f"Using cached stock data for {symbol}")
                     return cached
             except Exception as e:
@@ -174,8 +176,16 @@ class StockDataFetcher:
 
         if path.exists():
             df = pd.read_csv(path, index_col="date", parse_dates=True)
-            if hasattr(df.index, "tz") and df.index.tz is not None:
-                df.index = df.index.tz_localize(None)
+            # Ensure tz-naive index (handles tz-aware, mixed-tz, and object dtype)
+            try:
+                if hasattr(df.index, "tz") and df.index.tz is not None:
+                    df.index = df.index.tz_localize(None)
+                elif df.index.dtype == object or str(df.index.dtype).startswith("datetime64[ns,"):
+                    df.index = pd.to_datetime(df.index, utc=True).tz_localize(None)
+            except Exception:
+                df.index = pd.to_datetime(df.index.astype(str).str.replace(r"[+-]\d{2}:\d{2}$", "", regex=True))
+            # Normalize to midnight (drop time component from date index)
+            df.index = df.index.normalize()
             return df
         return None
 
