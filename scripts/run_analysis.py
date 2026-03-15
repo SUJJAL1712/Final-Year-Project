@@ -1336,9 +1336,28 @@ def main():
         action="store_true",
         help="Skip LLM-dependent analysis (no API key needed)",
     )
+    parser.add_argument(
+        "--figures-only",
+        action="store_true",
+        help="Only regenerate figures from existing CSV results (fast)",
+    )
     args = parser.parse_args()
 
     setup_logger("INFO")
+
+    if args.figures_only:
+        logger.info("Regenerating figures from existing results...")
+        fetcher = StockDataFetcher()
+        symbol_map = {"US": "^GSPC", "India": "^NSEI", "China": "^HSI"}
+        all_prices = {}
+        for market in ["US", "India", "China"]:
+            df = fetcher.fetch_symbol(symbol_map[market], ANALYSIS_START, ANALYSIS_END)
+            if not df.empty:
+                all_prices[market] = df
+        save_key_figures(all_prices, RESULTS_DIR)
+        logger.info("Done — figures saved to results/figures/")
+        return
+
     logger.info("Starting analysis pipeline...")
 
     # Load events from GDELT (real data, not hardcoded)
