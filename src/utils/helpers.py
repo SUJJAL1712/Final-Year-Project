@@ -7,21 +7,6 @@ import pandas as pd
 import numpy as np
 
 
-def trading_days_between(start: str, end: str) -> int:
-    """Count trading days between two dates (approximate, excludes weekends)."""
-    start_dt = pd.Timestamp(start)
-    end_dt = pd.Timestamp(end)
-    return len(pd.bdate_range(start_dt, end_dt))
-
-
-def normalize_series(series: pd.Series) -> pd.Series:
-    """Min-max normalize a series to [0, 1]."""
-    min_val = series.min()
-    max_val = series.max()
-    if max_val == min_val:
-        return pd.Series(0.5, index=series.index)
-    return (series - min_val) / (max_val - min_val)
-
 
 def compute_returns(prices: pd.Series, method: str = "log") -> pd.Series:
     """Compute returns from a price series.
