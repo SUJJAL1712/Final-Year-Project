@@ -105,9 +105,17 @@ def run_sector_analysis(results_dir: Path):
 
     analyzer = SectorVulnerabilityAnalyzer()
 
-    # Prepare event dates and types
-    event_dates = events["date"].tolist()
-    event_types = events["event_type"].tolist() if "event_type" in events.columns else ["unknown"] * len(events)
+    # Deduplicate: keep only the highest-severity event per day per type
+    # Without this, 1.27M events = 12M iterations = hours of runtime
+    events_deduped = (
+        events.sort_values("severity", ascending=False)
+        .groupby([events["date"].dt.date, "event_type"])
+        .first()
+        .reset_index()
+    )
+    logger.info(f"Deduplicated to {len(events_deduped)} unique date-type pairs (from {len(events)} raw events)")
+    event_dates = pd.to_datetime(events_deduped["date"]).tolist()
+    event_types = events_deduped["event_type"].tolist() if "event_type" in events_deduped.columns else ["unknown"] * len(events_deduped)
 
     # 1. Sector sensitivity matrix
     logger.info("Computing sector sensitivity to event types...")
@@ -117,13 +125,16 @@ def run_sector_analysis(results_dir: Path):
     sensitivity.to_csv(results_dir / "sector_sensitivity.csv", index=False)
     logger.info(f"Sector sensitivity: {len(sensitivity)} sector-event combinations")
 
-    # 2. Vulnerability heatmap data
-    heatmap = analyzer.vulnerability_heatmap_data(
-        sector_prices, event_dates, event_types, window_days=5
-    )
-    if not heatmap.empty:
+    # 2. Vulnerability heatmap data (pivot from sensitivity — no recomputation)
+    if not sensitivity.empty:
+        heatmap = sensitivity.pivot_table(
+            index="sector", columns="event_type",
+            values="avg_abnormal_return", aggfunc="mean",
+        )
         heatmap.to_csv(results_dir / "sector_vulnerability_heatmap.csv")
         logger.info(f"Vulnerability heatmap:\n{heatmap.round(4)}")
+    else:
+        heatmap = pd.DataFrame()
 
     # 3. Natural hedges
     logger.info("Identifying natural hedges during geopolitical events...")
