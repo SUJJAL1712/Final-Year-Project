@@ -208,6 +208,79 @@ def run_sector_analysis(results_dir: Path):
     logger.info("Sector vulnerability analysis complete!")
 
 
+def _generate_sector_figures(results_dir: Path):
+    """Generate sector figures from pre-existing CSVs. No data fetching needed."""
+    import plotly.io as pio
+    import plotly.graph_objects as go_fig
+    from src.visualization.heatmaps import HeatmapVisualizer
+
+    viz = HeatmapVisualizer()
+    fig_dir = results_dir / "figures"
+    fig_dir.mkdir(exist_ok=True)
+    saved = []
+
+    # 1. Vulnerability heatmap
+    heatmap_path = results_dir / "sector_vulnerability_heatmap.csv"
+    if heatmap_path.exists():
+        heatmap = pd.read_csv(heatmap_path, index_col=0)
+        fig = viz.plot_sector_vulnerability_heatmap(heatmap)
+        try:
+            pio.write_image(fig, str(fig_dir / "sector_vulnerability_heatmap.png"), scale=2)
+            saved.append("sector_vulnerability_heatmap.png")
+        except Exception:
+            fig.write_html(str(fig_dir / "sector_vulnerability_heatmap.html"))
+            saved.append("sector_vulnerability_heatmap.html")
+    else:
+        logger.warning("sector_vulnerability_heatmap.csv not found — run --sectors first")
+
+    # 2. Sector correlation during events
+    corr_path = results_dir / "sector_event_correlations.csv"
+    if corr_path.exists():
+        corr_matrix = pd.read_csv(corr_path, index_col=0)
+        fig = viz.plot_cross_market_correlation_heatmap(
+            corr_matrix, title="Sector Correlation During Geopolitical Events"
+        )
+        try:
+            pio.write_image(fig, str(fig_dir / "sector_event_correlations.png"), scale=2)
+            saved.append("sector_event_correlations.png")
+        except Exception:
+            fig.write_html(str(fig_dir / "sector_event_correlations.html"))
+            saved.append("sector_event_correlations.html")
+    else:
+        logger.warning("sector_event_correlations.csv not found — run --sectors first")
+
+    # 3. Regime shift bar chart
+    regime_path = results_dir / "sector_regime_shifts.csv"
+    if regime_path.exists():
+        regime_df = pd.read_csv(regime_path)
+        shift_by_sector = regime_df.groupby("sector")["regime_changed"].mean() * 100
+        shift_by_sector = shift_by_sector.sort_values(ascending=True)
+
+        fig = go_fig.Figure(go_fig.Bar(
+            x=shift_by_sector.values,
+            y=shift_by_sector.index,
+            orientation="h",
+            marker_color=["#e53935" if v > 50 else "#1976d2" for v in shift_by_sector.values],
+        ))
+        fig.update_layout(
+            title="Sector Regime Shift Rate After High-Severity Events",
+            xaxis_title="% of Events Causing Regime Shift",
+            template="plotly_white",
+            height=500, width=800,
+        )
+        try:
+            pio.write_image(fig, str(fig_dir / "sector_regime_shifts.png"), scale=2)
+            saved.append("sector_regime_shifts.png")
+        except Exception:
+            fig.write_html(str(fig_dir / "sector_regime_shifts.html"))
+            saved.append("sector_regime_shifts.html")
+    else:
+        logger.warning("sector_regime_shifts.csv not found — run --sectors first")
+
+    for name in saved:
+        logger.info(f"  → {name}")
+
+
 def run_dc_analysis(prices: pd.Series, market_name: str):
     """Run DC analysis for a single market."""
     logger.info(f"=== DC Analysis: {market_name} ===")
@@ -1502,6 +1575,11 @@ def main():
         action="store_true",
         help="Run only sector vulnerability analysis (fast, ~2 min)",
     )
+    parser.add_argument(
+        "--sector-figures",
+        action="store_true",
+        help="Generate sector figures from existing sector CSVs (instant)",
+    )
     args = parser.parse_args()
 
     setup_logger("INFO")
@@ -1526,6 +1604,12 @@ def main():
         logger.info("Running sector vulnerability analysis only...")
         run_sector_analysis(RESULTS_DIR)
         logger.info("Done — sector results saved to results/")
+        return
+
+    if args.sector_figures:
+        logger.info("Generating sector figures from existing CSVs...")
+        _generate_sector_figures(RESULTS_DIR)
+        logger.info("Done — sector figures saved to results/figures/")
         return
 
     logger.info("Starting analysis pipeline...")
