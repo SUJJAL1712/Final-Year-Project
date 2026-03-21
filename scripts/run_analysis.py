@@ -151,6 +151,60 @@ def run_sector_analysis(results_dir: Path):
     else:
         logger.info("No high-severity events for regime analysis")
 
+    # --- Save figures ---
+    import plotly.io as pio
+    from src.visualization.heatmaps import HeatmapVisualizer
+    viz = HeatmapVisualizer()
+    fig_dir = results_dir / "figures"
+    fig_dir.mkdir(exist_ok=True)
+
+    # Figure 1: Sector vulnerability heatmap
+    if not heatmap.empty:
+        fig = viz.plot_sector_vulnerability_heatmap(heatmap)
+        try:
+            pio.write_image(fig, str(fig_dir / "sector_vulnerability_heatmap.png"), scale=2)
+            logger.info(f"  Saved: sector_vulnerability_heatmap.png")
+        except Exception as e:
+            fig.write_html(str(fig_dir / "sector_vulnerability_heatmap.html"))
+            logger.info(f"  Saved as HTML (install kaleido for PNG): sector_vulnerability_heatmap.html")
+
+    # Figure 2: Sector correlation during events
+    corr_matrix = hedge_results["correlation_matrix"]
+    fig = viz.plot_cross_market_correlation_heatmap(
+        corr_matrix, title="Sector Correlation During Geopolitical Events"
+    )
+    try:
+        pio.write_image(fig, str(fig_dir / "sector_event_correlations.png"), scale=2)
+        logger.info(f"  Saved: sector_event_correlations.png")
+    except Exception as e:
+        fig.write_html(str(fig_dir / "sector_event_correlations.html"))
+        logger.info(f"  Saved as HTML: sector_event_correlations.html")
+
+    # Figure 3: Regime shift bar chart (% of sectors that shifted per event)
+    if not regime_df.empty:
+        import plotly.graph_objects as go_fig
+        shift_by_sector = regime_df.groupby("sector")["regime_changed"].mean() * 100
+        shift_by_sector = shift_by_sector.sort_values(ascending=True)
+
+        fig = go_fig.Figure(go_fig.Bar(
+            x=shift_by_sector.values,
+            y=shift_by_sector.index,
+            orientation="h",
+            marker_color=["#e53935" if v > 50 else "#1976d2" for v in shift_by_sector.values],
+        ))
+        fig.update_layout(
+            title="Sector Regime Shift Rate After High-Severity Events",
+            xaxis_title="% of Events Causing Regime Shift",
+            template="plotly_white",
+            height=500, width=800,
+        )
+        try:
+            pio.write_image(fig, str(fig_dir / "sector_regime_shifts.png"), scale=2)
+            logger.info(f"  Saved: sector_regime_shifts.png")
+        except Exception as e:
+            fig.write_html(str(fig_dir / "sector_regime_shifts.html"))
+            logger.info(f"  Saved as HTML: sector_regime_shifts.html")
+
     logger.info("Sector vulnerability analysis complete!")
 
 
