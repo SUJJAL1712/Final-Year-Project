@@ -52,6 +52,108 @@ RESULTS_DIR = DATA_DIR.parent / "results"
 RESULTS_DIR.mkdir(exist_ok=True)
 
 
+# Sector ETFs for vulnerability analysis
+SECTOR_ETFS = {
+    "Technology": "XLK",
+    "Energy": "XLE",
+    "Industrials": "XLI",
+    "Materials": "XLB",
+    "Financials": "XLF",
+    "Healthcare": "XLV",
+    "Consumer_Discretionary": "XLY",
+    "Consumer_Staples": "XLP",
+    "Defense": "ITA",
+    "Utilities": "XLU",
+}
+
+
+def run_sector_analysis(results_dir: Path):
+    """
+    Run sector vulnerability analysis independently.
+
+    Downloads sector ETF prices, loads existing geopolitical events,
+    and computes sector-specific sensitivity to each event type.
+    """
+    from src.analysis.sector_vulnerability import SectorVulnerabilityAnalyzer
+
+    fetcher = StockDataFetcher()
+    events_tracker = ConflictEventTracker()
+    events = events_tracker.get_combined_geopolitical_events()
+
+    if events.empty:
+        logger.warning("No events loaded — cannot run sector analysis")
+        return
+
+    logger.info(f"Loaded {len(events)} events for sector analysis")
+
+    # Download sector ETF prices
+    sector_prices = {}
+    for sector_name, symbol in SECTOR_ETFS.items():
+        df = fetcher.fetch_symbol(symbol, ANALYSIS_START, ANALYSIS_END)
+        if not df.empty:
+            prices = df["close"]
+            if hasattr(prices.index, "tz") and prices.index.tz is not None:
+                prices.index = prices.index.tz_localize(None)
+            sector_prices[sector_name] = prices
+            logger.info(f"  {sector_name} ({symbol}): {len(prices)} days")
+        else:
+            logger.warning(f"  {sector_name} ({symbol}): no data")
+
+    if len(sector_prices) < 3:
+        logger.warning("Too few sectors loaded, skipping sector analysis")
+        return
+
+    analyzer = SectorVulnerabilityAnalyzer()
+
+    # Prepare event dates and types
+    event_dates = events["date"].tolist()
+    event_types = events["event_type"].tolist() if "event_type" in events.columns else ["unknown"] * len(events)
+
+    # 1. Sector sensitivity matrix
+    logger.info("Computing sector sensitivity to event types...")
+    sensitivity = analyzer.compute_sector_sensitivity(
+        sector_prices, event_dates, event_types, window_days=5
+    )
+    sensitivity.to_csv(results_dir / "sector_sensitivity.csv", index=False)
+    logger.info(f"Sector sensitivity: {len(sensitivity)} sector-event combinations")
+
+    # 2. Vulnerability heatmap data
+    heatmap = analyzer.vulnerability_heatmap_data(
+        sector_prices, event_dates, event_types, window_days=5
+    )
+    if not heatmap.empty:
+        heatmap.to_csv(results_dir / "sector_vulnerability_heatmap.csv")
+        logger.info(f"Vulnerability heatmap:\n{heatmap.round(4)}")
+
+    # 3. Natural hedges
+    logger.info("Identifying natural hedges during geopolitical events...")
+    hedge_results = analyzer.identify_hedges(
+        sector_prices, event_dates, window_days=5
+    )
+    if hedge_results["hedges"]:
+        hedge_df = pd.DataFrame(hedge_results["hedges"])
+        hedge_df.to_csv(results_dir / "sector_hedges.csv", index=False)
+        logger.info(f"Found {len(hedge_df)} natural hedge pairs")
+        for h in hedge_results["hedges"][:5]:
+            logger.info(f"  {h['sector_a']} ↔ {h['sector_b']}: corr={h['correlation']:.3f}")
+    else:
+        logger.info("No strong natural hedges found (all correlations > -0.3)")
+
+    hedge_results["correlation_matrix"].to_csv(results_dir / "sector_event_correlations.csv")
+
+    # 4. Regime analysis (high-severity events only)
+    logger.info("Running sector regime analysis for high-severity events...")
+    regime_df = analyzer.sector_regime_analysis(sector_prices, events)
+    if not regime_df.empty:
+        regime_df.to_csv(results_dir / "sector_regime_shifts.csv", index=False)
+        n_shifted = regime_df["regime_changed"].sum()
+        logger.info(f"Regime shifts detected: {n_shifted}/{len(regime_df)} sector-event pairs")
+    else:
+        logger.info("No high-severity events for regime analysis")
+
+    logger.info("Sector vulnerability analysis complete!")
+
+
 def run_dc_analysis(prices: pd.Series, market_name: str):
     """Run DC analysis for a single market."""
     logger.info(f"=== DC Analysis: {market_name} ===")
@@ -1341,6 +1443,11 @@ def main():
         action="store_true",
         help="Only regenerate figures from existing CSV results (fast)",
     )
+    parser.add_argument(
+        "--sectors",
+        action="store_true",
+        help="Run only sector vulnerability analysis (fast, ~2 min)",
+    )
     args = parser.parse_args()
 
     setup_logger("INFO")
@@ -1359,6 +1466,12 @@ def main():
                 all_prices[market] = prices
         save_key_figures(all_prices, RESULTS_DIR)
         logger.info("Done — figures saved to results/figures/")
+        return
+
+    if args.sectors:
+        logger.info("Running sector vulnerability analysis only...")
+        run_sector_analysis(RESULTS_DIR)
+        logger.info("Done — sector results saved to results/")
         return
 
     logger.info("Starting analysis pipeline...")
@@ -1455,6 +1568,13 @@ def main():
 
         # Cross-market contagion
         run_cross_market_contagion(all_prices, events)
+
+    # Sector vulnerability analysis
+    logger.info("\n=== Sector Vulnerability Analysis ===")
+    try:
+        run_sector_analysis(RESULTS_DIR)
+    except Exception as e:
+        logger.warning(f"Sector analysis failed (non-critical): {e}")
 
     # Save key figures for thesis / presentation
     try:
