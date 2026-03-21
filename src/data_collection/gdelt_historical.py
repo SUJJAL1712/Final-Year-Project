@@ -380,36 +380,50 @@ class GDELTHistoricalFetcher:
             return 5
 
         if event_type == "conflict":
-            # More negative = more severe
-            if goldstein <= -9:
+            # More negative = more severe (calibrated for CAMEO 145-202, gs ~ -5 to -10)
+            if goldstein <= -9.5:
                 return 10
-            elif goldstein <= -7:
+            elif goldstein <= -8.5:
                 return 9
-            elif goldstein <= -5:
+            elif goldstein <= -7.5:
                 return 8
-            elif goldstein <= -3:
+            elif goldstein <= -6.5:
                 return 7
-            elif goldstein <= -1:
+            elif goldstein <= -5.5:
                 return 6
-            elif goldstein <= 1:
+            elif goldstein <= -4.5:
                 return 5
-            else:
+            elif goldstein <= -3.0:
                 return 4
+            elif goldstein <= -1.0:
+                return 3
+            elif goldstein <= 0:
+                return 2
+            else:
+                return 1
         else:
-            # Tariff: severity from magnitude of impact
+            # Tariff: severity from magnitude of impact (calibrated for abs(gs) ~ 5-8)
             mag = abs(goldstein)
-            if mag >= 9:
+            if mag >= 9.0:
                 return 10
-            elif mag >= 7:
+            elif mag >= 8.0:
+                return 9
+            elif mag >= 7.0:
                 return 8
-            elif mag >= 5:
+            elif mag >= 6.5:
                 return 7
-            elif mag >= 3:
+            elif mag >= 6.0:
                 return 6
-            elif mag >= 1:
+            elif mag >= 5.0:
                 return 5
-            else:
+            elif mag >= 4.0:
                 return 4
+            elif mag >= 3.0:
+                return 3
+            elif mag >= 1.0:
+                return 2
+            else:
+                return 1
 
     def _infer_markets(self, actor1: str, actor2: str) -> list[str]:
         """Infer affected stock markets from actor country names."""
@@ -505,17 +519,19 @@ class GDELTHistoricalFetcher:
         mag = gs.abs()
         is_conflict = df["event_type"] == "conflict"
 
-        # Conflict severity: more negative = more severe
+        # Conflict severity: more negative = more severe (calibrated for CAMEO 145-202)
         conflict_sev = np.select(
-            [gs <= -9, gs <= -7, gs <= -5, gs <= -3, gs <= -1, gs <= 1],
-            [10, 9, 8, 7, 6, 5],
-            default=4,
+            [gs <= -9.5, gs <= -8.5, gs <= -7.5, gs <= -6.5, gs <= -5.5,
+             gs <= -4.5, gs <= -3.0, gs <= -1.0, gs <= 0],
+            [10, 9, 8, 7, 6, 5, 4, 3, 2],
+            default=1,
         )
-        # Tariff severity: magnitude of impact
+        # Tariff severity: magnitude of impact (calibrated for abs(gs) ~ 5-8)
         tariff_sev = np.select(
-            [mag >= 9, mag >= 7, mag >= 5, mag >= 3, mag >= 1],
-            [10, 8, 7, 6, 5],
-            default=4,
+            [mag >= 9.0, mag >= 8.0, mag >= 7.0, mag >= 6.5, mag >= 6.0,
+             mag >= 5.0, mag >= 4.0, mag >= 3.0, mag >= 1.0],
+            [10, 9, 8, 7, 6, 5, 4, 3, 2],
+            default=1,
         )
         df["severity"] = np.where(is_conflict, conflict_sev, tariff_sev)
         df.loc[gs.isna(), "severity"] = 5

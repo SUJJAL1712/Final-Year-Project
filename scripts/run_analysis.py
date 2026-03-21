@@ -445,7 +445,10 @@ def run_llm_analysis(events_df: pd.DataFrame, skip_llm: bool) -> pd.DataFrame:
 
 
 def run_event_study(
-    prices: pd.Series, events_df: pd.DataFrame, market_name: str
+    prices: pd.Series,
+    events_df: pd.DataFrame,
+    market_name: str,
+    market_returns: pd.Series | None = None,
 ):
     """Run event study analysis."""
     logger.info(f"=== Event Study: {market_name} ===")
@@ -458,13 +461,13 @@ def run_event_study(
         return pd.DataFrame()
 
     # Individual event results
-    results = analyzer.multi_event_study(prices, event_dates)
+    results = analyzer.multi_event_study(prices, event_dates, market_returns)
     results.to_csv(
         RESULTS_DIR / f"event_study_{market_name}.csv", index=False
     )
 
     # Average CAR
-    acar = analyzer.average_car(prices, event_dates)
+    acar = analyzer.average_car(prices, event_dates, market_returns)
     if "error" not in acar:
         logger.info(
             f"ACAR: {acar['acar'].iloc[-1]:.6f}, "
@@ -527,10 +530,21 @@ def run_cross_market_contagion(
     spillover_df.to_csv(RESULTS_DIR / "spillover_matrix.csv")
     logger.info(f"Spillover matrix:\n{spillover_df}")
 
-    # Multi-event contagion
+    # Multi-event contagion — deduplicate to highest-severity per day
     if not events_df.empty:
+        high_sev = events_df[events_df["severity"] >= 7].copy()
+        if not high_sev.empty:
+            high_sev["_date_key"] = pd.to_datetime(high_sev["date"]).dt.normalize()
+            high_sev = (
+                high_sev.sort_values("severity", ascending=False)
+                .drop_duplicates(subset=["_date_key"], keep="first")
+                .drop(columns=["_date_key"])
+            )
+            logger.info(f"Contagion: {len(high_sev)} high-severity events (from {len(events_df)} total)")
+        else:
+            high_sev = events_df.head(0)  # empty with same columns
         contagion_results = contagion.multi_event_contagion(
-            market_prices, events_df
+            market_prices, high_sev
         )
         if not contagion_results.empty:
             contagion_results.to_csv(
@@ -627,7 +641,10 @@ def run_model_training(
 
 
 def run_extended_event_study(
-    prices: pd.Series, events_df: pd.DataFrame, market_name: str
+    prices: pd.Series,
+    events_df: pd.DataFrame,
+    market_name: str,
+    market_returns: pd.Series | None = None,
 ):
     """Extended event study: BH correction, Cohen's d, placebo test, window sensitivity."""
     logger.info(f"=== Extended Event Study: {market_name} ===")
@@ -640,7 +657,7 @@ def run_extended_event_study(
         return
 
     # BH-corrected multi-event study with effect sizes
-    extended = analyzer.multi_event_study_extended(prices, event_dates)
+    extended = analyzer.multi_event_study_extended(prices, event_dates, market_returns)
     if not extended.empty:
         extended.to_csv(
             RESULTS_DIR / f"event_study_extended_{market_name}.csv", index=False
@@ -654,7 +671,7 @@ def run_extended_event_study(
         )
 
     # Window sensitivity
-    window_sens = analyzer.window_sensitivity(prices, event_dates)
+    window_sens = analyzer.window_sensitivity(prices, event_dates, market_returns=market_returns)
     if not window_sens.empty:
         window_sens.to_csv(
             RESULTS_DIR / f"event_window_sensitivity_{market_name}.csv", index=False
@@ -1673,9 +1690,15 @@ def main():
             market_events = market_events[market_events["date"] >= min_date]
             logger.info(f"Market events for {market}: {len(market_events)} (unique dates: {market_events['date'].nunique()})")
 
+        # For non-US markets, use US returns as benchmark (market model)
+        us_benchmark = None
+        if market != "US" and "US" in all_prices:
+            us_benchmark = compute_returns(all_prices["US"])
+            us_benchmark.index = us_benchmark.index.normalize()
+
         # Run analyses
         run_dc_analysis(prices, market)
-        run_event_study(prices, market_events, market)
+        run_event_study(prices, market_events, market, market_returns=us_benchmark)
         run_dc_event_correlation(prices, market_events, market)
         run_model_training(
             prices, market_events, market,
@@ -1684,7 +1707,7 @@ def main():
 
         # Research-grade extensions
         sent = sentiment_df if not sentiment_df.empty else None
-        run_extended_event_study(prices, market_events, market)
+        run_extended_event_study(prices, market_events, market, market_returns=us_benchmark)
         run_extended_model_training(prices, market_events, market, sentiment_df=sent)
         run_dc_sensitivity(prices, market_events, market, sentiment_df=sent)
         run_regime_analysis(prices, market_events, market, sentiment_df=sent)

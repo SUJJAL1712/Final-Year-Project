@@ -87,12 +87,20 @@ class IntrinsicTimeAnalyzer:
         avg_events_per_day = total_events / max(total_days, 1)
         expected_in_window = avg_events_per_day * window_days
 
-        # Rolling count of DC events
-        tcf = pd.Series(np.nan, index=prices.index, name="tcf")
-        for date in prices.index:
-            window_start = date - pd.Timedelta(days=window_days)
-            count = ((dc_dates >= window_start) & (dc_dates <= date)).sum()
-            tcf[date] = count / max(expected_in_window, 1e-6)
+        # Rolling count of DC events using searchsorted — O(N log E) instead of O(N*E)
+        dc_dates_sorted = np.sort(dc_dates.values)
+        dates_arr = prices.index.values
+        window_starts = dates_arr - np.timedelta64(window_days, "D")
+
+        right_idx = np.searchsorted(dc_dates_sorted, dates_arr, side="right")
+        left_idx = np.searchsorted(dc_dates_sorted, window_starts, side="left")
+        counts = right_idx - left_idx
+
+        tcf = pd.Series(
+            counts / max(expected_in_window, 1e-6),
+            index=prices.index,
+            name="tcf",
+        )
 
         return tcf
 

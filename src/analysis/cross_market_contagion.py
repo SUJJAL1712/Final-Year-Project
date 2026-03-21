@@ -54,29 +54,27 @@ class CrossMarketContagionAnalyzer:
         df = pd.DataFrame(aligned).dropna()
         markets = list(df.columns)
 
-        # Rolling correlation matrix as proxy for spillover
+        # Rolling correlation matrix as proxy for spillover — O(N) per pair
         rolling_corr = df.rolling(window).corr()
 
-        # Extract average cross-correlations
+        # Extract average cross-correlations from the pre-computed rolling result
         avg_spillover = {}
         for i, m1 in enumerate(markets):
             for j, m2 in enumerate(markets):
                 if i != j:
                     key = f"{m1}_to_{m2}"
-                    # Get rolling correlation between m1 and m2
-                    corrs = []
-                    for date in df.index[window:]:
-                        try:
-                            corr_matrix = df.loc[:date].tail(window).corr()
-                            corrs.append(corr_matrix.loc[m1, m2])
-                        except (KeyError, ValueError):
-                            pass
-                    if corrs:
-                        avg_spillover[key] = {
-                            "mean_correlation": np.mean(corrs),
-                            "std_correlation": np.std(corrs),
-                            "max_correlation": np.max(corrs),
-                        }
+                    # Extract pairwise rolling correlation from multi-index result
+                    try:
+                        pair_corrs = rolling_corr.loc[(slice(None), m1), m2].dropna()
+                        if len(pair_corrs) > 0:
+                            vals = pair_corrs.values
+                            avg_spillover[key] = {
+                                "mean_correlation": float(np.mean(vals)),
+                                "std_correlation": float(np.std(vals)),
+                                "max_correlation": float(np.max(vals)),
+                            }
+                    except (KeyError, ValueError):
+                        pass
 
         return avg_spillover
 
@@ -86,6 +84,7 @@ class CrossMarketContagionAnalyzer:
         event_date: str,
         source_market: str,
         window_days: int = 10,
+        precomputed_returns: dict[str, pd.Series] | None = None,
     ) -> dict:
         """
         Analyze how a shock in the source market propagates to other markets.
@@ -98,24 +97,30 @@ class CrossMarketContagionAnalyzer:
         event_ts = pd.Timestamp(event_date)
         results = {"event_date": event_date, "source_market": source_market}
 
-        # Get returns around event
-        source_returns = compute_returns(market_prices[source_market])
-        source_returns.index = source_returns.index.normalize()
+        # Use precomputed returns if available, otherwise compute
+        if precomputed_returns and source_market in precomputed_returns:
+            source_returns = precomputed_returns[source_market]
+        else:
+            source_returns = compute_returns(market_prices[source_market])
+            source_returns.index = source_returns.index.normalize()
 
         # Source market reaction
         event_window = source_returns[
             (source_returns.index >= event_ts - pd.Timedelta(days=1))
             & (source_returns.index <= event_ts + pd.Timedelta(days=window_days))
         ]
-        results["source_cum_return"] = event_window.sum() if len(event_window) > 0 else 0
+        results["source_cum_return"] = (1 + event_window).prod() - 1 if len(event_window) > 0 else 0
 
         # Analyze contagion to other markets
         for market_name, prices in market_prices.items():
             if market_name == source_market:
                 continue
 
-            target_returns = compute_returns(prices)
-            target_returns.index = target_returns.index.normalize()
+            if precomputed_returns and market_name in precomputed_returns:
+                target_returns = precomputed_returns[market_name]
+            else:
+                target_returns = compute_returns(prices)
+                target_returns.index = target_returns.index.normalize()
 
             target_window = target_returns[
                 (target_returns.index >= event_ts - pd.Timedelta(days=1))
@@ -129,15 +134,11 @@ class CrossMarketContagionAnalyzer:
             peak_idx = target_window.abs().idxmax()
             peak_lag = (peak_idx - event_ts).days
 
-            # Cumulative return over window
-            cum_return = target_window.sum()
+            # Cumulative return over window (proper compounding)
+            cum_return = (1 + target_window).prod() - 1
 
-            # Transmission ratio (guard against near-zero denominator)
-            src_ret = results["source_cum_return"]
-            if abs(src_ret) > 1e-8:
-                transmission = cum_return / src_ret
-            else:
-                transmission = 0.0
+            # Transmission ratio
+            transmission = cum_return / results["source_cum_return"] if results["source_cum_return"] != 0 else 0
 
             results[f"{market_name}_cum_return"] = cum_return
             results[f"{market_name}_peak_lag_days"] = peak_lag
@@ -159,6 +160,13 @@ class CrossMarketContagionAnalyzer:
         Run contagion analysis across all events and aggregate patterns.
         """
         results = []
+
+        # Precompute returns for all markets once instead of per-event
+        precomputed_returns = {}
+        for name, prices in market_prices.items():
+            ret = compute_returns(prices)
+            ret.index = ret.index.normalize()
+            precomputed_returns[name] = ret
 
         for _, event in events_df.iterrows():
             # Determine source market from event
@@ -182,7 +190,8 @@ class CrossMarketContagionAnalyzer:
 
             if source_market and source_market in market_prices:
                 result = self.event_contagion_analysis(
-                    market_prices, str(event["date"]), source_market, window_days
+                    market_prices, str(event["date"]), source_market, window_days,
+                    precomputed_returns=precomputed_returns,
                 )
                 result["event"] = event.get("event", "")
                 result["category"] = event.get("category", "")
@@ -232,9 +241,9 @@ class CrossMarketContagionAnalyzer:
             if len(india_window) > 0:
                 india_reactions.append({
                     "event_date": date_str,
-                    "india_cum_return": india_window.sum(),
-                    "us_cum_return": us_window.sum() if len(us_window) > 0 else 0,
-                    "china_cum_return": china_window.sum() if len(china_window) > 0 else 0,
+                    "india_cum_return": (1 + india_window).prod() - 1,
+                    "us_cum_return": (1 + us_window).prod() - 1 if len(us_window) > 0 else 0,
+                    "china_cum_return": (1 + china_window).prod() - 1 if len(china_window) > 0 else 0,
                 })
 
         if not india_reactions:

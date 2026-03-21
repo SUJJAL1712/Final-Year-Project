@@ -83,19 +83,21 @@ class FeatureEngineer:
         For the target market, compute features based on
         other markets' recent behavior.
         """
+        target_returns = target_returns.copy()
         features = pd.DataFrame(index=target_returns.index)
 
         for name, other_ret in other_market_returns.items():
+            other_ret = other_ret.copy()
             other_ret.index = other_ret.index.normalize()
             aligned = other_ret.reindex(target_returns.index)
 
-            # Other market's recent return
-            features[f"{name}_return_1d"] = aligned
-            features[f"{name}_return_5d"] = aligned.rolling(5).sum()
+            # Other market's recent return (lagged to avoid look-ahead bias)
+            features[f"{name}_return_1d"] = aligned.shift(1)
+            features[f"{name}_return_5d"] = aligned.rolling(5).sum().shift(1)
 
-            # Rolling correlation with target
+            # Rolling correlation with target (lagged to avoid look-ahead bias)
             features[f"{name}_corr_20d"] = (
-                target_returns.rolling(20).corr(aligned)
+                target_returns.rolling(20).corr(aligned).shift(1)
             )
 
             # Lead signal: other market's return as predictor

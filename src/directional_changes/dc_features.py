@@ -53,15 +53,20 @@ class DCFeatureExtractor:
         """Compute rolling features from DC events for each date."""
         records = []
 
-        for date in dates:
-            # Get DC events up to this date
-            past_events = dc_df[dc_df["dc_confirm_time"] <= date]
+        # Pre-sort DC events and use searchsorted for O(N log E) instead of O(N*E)
+        dc_df = dc_df.sort_values("dc_confirm_time").reset_index(drop=True)
+        dc_confirm_times = dc_df["dc_confirm_time"].values
 
-            if len(past_events) < 2:
+        for date in dates:
+            # Binary search for number of DC events up to this date
+            n_past = int(np.searchsorted(dc_confirm_times, date, side="right"))
+
+            if n_past < 2:
                 records.append(self._empty_features(date))
                 continue
 
-            recent = past_events.tail(window)
+            past_events = dc_df.iloc[:n_past]
+            recent = past_events.iloc[-window:]
             rec = {"date": date}
 
             # Current market state

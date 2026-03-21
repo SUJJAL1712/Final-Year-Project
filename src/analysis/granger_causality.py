@@ -63,13 +63,17 @@ class GrangerCausalityAnalyzer:
         if len(df) < max_lags * 3:
             return {"error": "insufficient_data", "n_obs": len(df)}
 
-        # Check stationarity
+        # Check stationarity – collect columns that need differencing,
+        # then diff them all at once so they stay aligned.
+        cols_to_diff = []
         for col in ["cause", "effect"]:
             stat = self.test_stationarity(df[col])
             if not stat.get("stationary", False):
                 logger.info(f"{col} is non-stationary, differencing")
-                df[col] = df[col].diff().dropna()
-                df = df.dropna()
+                cols_to_diff.append(col)
+        if cols_to_diff:
+            df[cols_to_diff] = df[cols_to_diff].diff()
+            df = df.dropna()
 
         try:
             # Granger test (effect is the dependent variable)
@@ -124,11 +128,16 @@ class GrangerCausalityAnalyzer:
         if len(df) < max_lags * 3:
             return {"error": "insufficient_data", "n_obs": len(df)}
 
+        # Collect columns needing differencing, then diff all at once
+        # to avoid misalignment from sequential dropna() calls.
+        cols_to_diff = []
         for col in ["cause", "effect"]:
             stat = self.test_stationarity(df[col])
             if not stat.get("stationary", False):
-                df[col] = df[col].diff()
-                df = df.dropna()
+                cols_to_diff.append(col)
+        if cols_to_diff:
+            df[cols_to_diff] = df[cols_to_diff].diff()
+            df = df.dropna()
 
         try:
             # Select optimal lag by AIC using VAR

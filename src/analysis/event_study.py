@@ -59,12 +59,6 @@ class EventStudyAnalyzer:
         event_date = pd.Timestamp(event_date)
         returns = compute_returns(prices, method="simple")
 
-        # Match timezone of returns index
-        if returns.index.tz is not None and event_date.tz is None:
-            event_date = event_date.tz_localize(returns.index.tz)
-        elif returns.index.tz is None and event_date.tz is not None:
-            event_date = event_date.tz_localize(None)
-
         # Find event date in the index (or nearest trading day)
         if event_date not in returns.index:
             nearest = returns.index[returns.index.get_indexer([event_date], method="nearest")[0]]
@@ -176,12 +170,11 @@ class EventStudyAnalyzer:
             DataFrame with results for each event
         """
         results = []
-        seen_snapped_dates = set()
+        seen_snapped_dates: set[pd.Timestamp] = set()
 
         for date in event_dates:
             result = self.single_event_study(prices, date, market_returns)
             if "error" not in result:
-                # Skip pseudo-duplicates: multiple events snapped to same trading day
                 snapped = result["event_date"]
                 if snapped in seen_snapped_dates:
                     continue
@@ -216,15 +209,10 @@ class EventStudyAnalyzer:
         This is the primary aggregate measure of event impact.
         """
         all_cars = []
-        seen_snapped_dates = set()
 
         for date in event_dates:
             result = self.single_event_study(prices, date, market_returns)
             if "error" not in result:
-                snapped = result["event_date"]
-                if snapped in seen_snapped_dates:
-                    continue
-                seen_snapped_dates.add(snapped)
                 car = result["cumulative_abnormal_returns"]
                 # Normalize index to relative days
                 car.index = range(-self.pre_window, len(car) - self.pre_window)
@@ -272,14 +260,21 @@ class EventStudyAnalyzer:
     ) -> pd.DataFrame:
         """Like multi_event_study but adds BH-corrected p-values and Cohen's d."""
         results = []
+        seen_snapped_dates: set[pd.Timestamp] = set()
 
         for date in event_dates:
             result = self.single_event_study(prices, date, market_returns)
             if "error" not in result:
-                # Cohen's d: effect size = CAR / estimation_std
+                snapped = result["event_date"]
+                if snapped in seen_snapped_dates:
+                    continue
+                seen_snapped_dates.add(snapped)
+                # Cohen's d: effect size = CAR / (estimation_std * sqrt(window_length))
                 est_std = result.get("estimation_std", 0)
+                event_window_length = self.pre_window + self.post_window + 1
                 cohens_d = (
-                    result["total_car"] / est_std if est_std > 0 else 0.0
+                    result["total_car"] / (est_std * np.sqrt(event_window_length))
+                    if est_std > 0 else 0.0
                 )
                 results.append({
                     "event_date": result["event_date"],
@@ -327,18 +322,11 @@ class EventStudyAnalyzer:
             return {"error": "no_valid_events"}
         real_acar = float(real["acar"].iloc[-1])
 
-        # Build exclusion set from event dates.
-        # With high-density events (~4000 across 2752 trading days), a ±20 day
-        # exclusion zone eliminates nearly ALL trading days, making the placebo
-        # test degenerate (std ≈ 0, p = 1.0 always).  Use ±5 days instead —
-        # still avoids overlap with the post-event window while keeping a
-        # viable pool of non-event dates.
+        # Build exclusion set: real event dates ± 20 days
         event_ts = pd.to_datetime(event_dates)
-        if returns.index.tz is not None:
-            event_ts = event_ts.tz_localize(returns.index.tz) if event_ts.tz is None else event_ts.tz_convert(returns.index.tz)
         exclude = set()
         for d in event_ts:
-            for offset in range(-5, 6):
+            for offset in range(-20, 21):
                 exclude.add(d + pd.Timedelta(days=offset))
 
         # Available dates for placebo
@@ -349,18 +337,6 @@ class EventStudyAnalyzer:
         # Run placebo event studies
         placebo_cars = []
         n_events_per_placebo = min(len(event_dates), 50)  # cap for speed
-
-        # If available dates are fewer than needed per placebo, reduce or use replace=True
-        if len(available) < n_events_per_placebo:
-            logger.warning(
-                f"Placebo test: only {len(available)} available dates "
-                f"(need {n_events_per_placebo}). Reducing events per placebo."
-            )
-            n_events_per_placebo = max(len(available), 1)
-
-        if len(available) < 2:
-            logger.warning("Not enough non-event dates for placebo test")
-            return {"error": "insufficient_non_event_dates"}
 
         for _ in range(n_placebos):
             placebo_dates = rng.choice(available, size=n_events_per_placebo, replace=False)
